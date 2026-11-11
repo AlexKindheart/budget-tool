@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Transactions{% endblock %}
+{% block content %}
+<div class="bar">
+  <div class="month">
+    <a class="btn ghost" href="?month={{ prev }}&category={{ cat }}&q={{ q|urlencode }}">&larr;</a>
+    <h1>{{ label }}</h1>
+    <a class="btn ghost" href="?month={{ nxt }}&category={{ cat }}&q={{ q|urlencode }}">&rarr;</a>
+  </div>
+  <form class="filters" method="get">
+    <input type="hidden" name="month" value="{{ month }}">
+    <select name="category" onchange="this.form.submit()">
+      <option value="">All categories</option>
+      <option value="none" {{ 'selected' if cat == 'none' }}>Uncategorized</option>
+      {% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if cat == c.id|string }}>{{ c.name }}</option>{% endfor %}
+    </select>
+    <input type="search" name="q" value="{{ q }}" placeholder="Search">
+    <button class="btn">Filter</button>
+  </form>
+</div>
+
+<section class="card">
+  <p class="muted small">Change a category and it's saved right away. Tick <em>always</em> first to
+     make a rule so this merchant gets that category from now on.</p>
+  <table class="tx">
+    <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Category</th><th class="num">Amount</th></tr></thead>
+    <tbody>
+    {% for t in txs %}
+      <tr>
+        <td class="nowrap">{{ t.date }}</td>
+        <td>{{ t.merchant or t.name }}{% if t.pending %} <span class="pill">pending</span>{% endif %}
+          {% if t.merchant and t.name != t.merchant %}<div class="muted small">{{ t.name }}</div>{% endif %}</td>
+        <td class="muted small">{{ t.account }}{% if t.mask %} ••{{ t.mask }}{% endif %}</td>
+        <td>
+          <form method="post" action="{{ url_for('set_category', tx_id=t.transaction_id) }}" class="catform">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="{{ request.full_path }}">
+            <select name="category_id" onchange="this.form.submit()">
+              <option value="">Uncategorized</option>
+              {% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if c.id == t.category_id }}>{{ c.name }}</option>{% endfor %}
+            </select>
+            <label class="small" title="Use this category for every transaction from this merchant"><input type="checkbox" name="apply_rule" value="1"> always</label>
+          </form>
+        </td>
+        <td class="num {{ 'pos' if t.amount < 0 }}">{{ (-t.amount)|money }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">No transactions match.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

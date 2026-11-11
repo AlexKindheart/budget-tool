@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf" content="{{ csrf_token() }}">
+  <title>{% block title %}Budget{% endblock %} · Budget Tool</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="{{ url_for('dashboard') }}">Budget Tool</a>
+    <nav>
+      {% set ep = request.endpoint %}
+      <a href="{{ url_for('dashboard') }}" class="{{ 'on' if ep == 'dashboard' }}">Dashboard</a>
+      <a href="{{ url_for('transactions') }}" class="{{ 'on' if ep == 'transactions' }}">Transactions</a>
+      <a href="{{ url_for('budgets') }}" class="{{ 'on' if ep == 'budgets' }}">Budgets</a>
+      <a href="{{ url_for('connections') }}" class="{{ 'on' if ep == 'connections' }}">Banks</a>
+      <a href="{{ url_for('settings') }}" class="{{ 'on' if ep == 'settings' }}">Settings</a>
+    </nav>
+    {% if plaid_env == 'sandbox' %}<span class="pill warn" title="Fake test data. Switch to Production on the Settings screen for real banks.">Sandbox</span>{% endif %}
+  </header>
+
+  <main>
+    {% if not plaid_ready and request.endpoint != 'settings' %}
+      <div class="flash error">
+        Plaid isn't set up yet. Add your Plaid keys on the <a href="{{ url_for('settings') }}">Settings</a> screen.
+      </div>
+    {% endif %}
+    {% for cat, msg in get_flashed_messages(with_categories=true) %}
+      <div class="flash {{ cat }}">{{ msg }}</div>
+    {% endfor %}
+    <div id="js-error" class="flash error" hidden></div>
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="{{ url_for('static', filename='link.js') }}"></script>
+</body>
+</html>

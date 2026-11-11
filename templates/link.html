@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf" content="{{ csrf_token() }}">
+  <title>Connect your bank · Budget Tool</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="narrow">
+    <section class="card empty">
+      <h1>{{ 'Reconnect your bank' if item_id else 'Connect your bank' }}</h1>
+      <p id="status" class="muted">Opening Plaid's secure sign-in…</p>
+      {% if plaid_env == 'sandbox' %}<p class="muted small">Sandbox test login: <code>user_good</code> / <code>pass_good</code></p>{% endif %}
+      <button id="start" class="btn primary" hidden>Try again</button>
+    </section>
+  </main>
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+  <script>
+  (function () {
+    const csrf = document.querySelector('meta[name="csrf"]').content;
+    const itemId = {{ item_id|tojson }};
+    const status = document.getElementById('status');
+    const again = document.getElementById('start');
+
+    async function post(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Request failed (' + res.status + ')');
+      return data;
+    }
+
+    function fail(msg) {
+      status.textContent = msg;
+      status.className = 'flash error';
+      again.hidden = false;
+    }
+
+    async function start() {
+      again.hidden = true;
+      status.className = 'muted';
+      status.textContent = "Opening Plaid's secure sign-in…";
+      if (typeof Plaid === 'undefined') return fail('Could not load Plaid. Check your internet connection.');
+      try {
+        const { link_token } = await post('/api/link-token', itemId ? { item_id: itemId } : {});
+        Plaid.create({
+          token: link_token,
+          onSuccess: async (public_token, metadata) => {
+            status.textContent = 'Downloading your transactions…';
+            try {
+              const r = itemId
+                ? await post('/api/reconnected', { item_id: itemId })
+                : await post('/api/exchange', {
+                    public_token,
+                    institution: metadata && metadata.institution ? metadata.institution.name : null,
+                  });
+              status.className = 'flash ok';
+              status.textContent = r.message + ' You can close this tab and go back to Budget Tool.';
+            } catch (e) { fail(e.message); }
+          },
+          onExit: (err) => fail(err
+            ? (err.display_message || err.error_message || 'Plaid closed with an error.')
+            : 'Sign-in was closed before it finished.'),
+        }).open();
+      } catch (e) { fail(e.message); }
+    }
+
+    again.addEventListener('click', start);
+    start();
+  })();
+  </script>
+</body>
+</html>

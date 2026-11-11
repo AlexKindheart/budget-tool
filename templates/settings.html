@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<h1>Settings</h1>
+
+<section class="card">
+  <h2>Plaid connection</h2>
+  <p class="muted small">Find these at <strong>dashboard.plaid.com → Developers → Keys</strong>.
+     Sandbox and Production have different secrets. Use the one that matches the environment you pick.</p>
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <div class="form-row">
+      <label for="cid">Client ID</label>
+      <input id="cid" name="plaid_client_id" value="{{ client_id }}" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="form-row">
+      <label for="sec">Secret</label>
+      <input id="sec" name="plaid_secret" type="password" autocomplete="off"
+             placeholder="{{ 'Saved - leave blank to keep it' if has_secret else 'Paste your secret' }}">
+    </div>
+    <div class="form-row">
+      <label for="env">Environment</label>
+      <select id="env" name="plaid_env">
+        <option value="sandbox" {{ 'selected' if env == 'sandbox' }}>Sandbox (fake test banks)</option>
+        <option value="production" {{ 'selected' if env == 'production' }}>Production (your real bank)</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label for="cc">Countries</label>
+      <input id="cc" name="plaid_country_codes" value="{{ countries }}" placeholder="US">
+    </div>
+    <div class="form-row">
+      <label for="iv">Auto-sync every (hours)</label>
+      <input id="iv" name="sync_interval_hours" type="number" min="0.25" step="0.25" value="{{ interval }}">
+    </div>
+    <button class="btn primary">Save</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Your data</h2>
+  <p class="muted small">Stored only on this computer, in <code>{{ data_dir }}</code>.
+     The database includes your bank access tokens, so don't share that folder.</p>
+</section>
+{% endblock %}
