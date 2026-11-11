@@ -40,14 +40,11 @@
   </table>
 </section>
 
-<section class="card trend" data-trend data-selected="{{ month }}" data-month-url="{{ url_for('overview') }}">
+<section class="card trend" data-trend>
   <div class="bar tight">
     <div>
-      <h2>Trends</h2>
-      <div class="legend">
-        <span><i class="swatch s1"></i>Income</span>
-        <span><i class="swatch s2"></i>Expenses</span>
-      </div>
+      <h2>Balances</h2>
+      <div class="muted small" data-subtitle></div>
     </div>
     <div class="seg" role="group" aria-label="How many months">
       <button type="button" data-range="6">6 mo</button>
@@ -55,17 +52,17 @@
       <button type="button" data-range="24">24 mo</button>
     </div>
   </div>
-  <div class="chart" role="img" aria-label="Monthly income and expenses"></div>
+  <div class="acct-picks" role="group" aria-label="Accounts to show">
+    <label class="pick"><input type="checkbox" value="all" checked> <i class="key sa"></i>All accounts</label>
+    {% for s in trend.accounts if not s.closed %}
+      <label class="pick"><input type="checkbox" value="{{ s.id }}"> <i class="key s{{ s.slot % 8 + 1 }}"></i>{{ s.name }}</label>
+    {% endfor %}
+  </div>
+  <div class="chart" role="img" aria-label="Account balances over time"></div>
   <div class="tip" hidden></div>
   <details class="tableview">
-    <summary class="small muted">Show as a table</summary>
-    <table>
-      <thead><tr><th>Month</th><th class="num">Income</th><th class="num">Expenses</th><th class="num">Net</th></tr></thead>
-      <tbody>{% for r in trend|reverse %}{% if loop.index <= 12 %}
-        <tr><td><a href="{{ url_for('overview', month=r.month) }}">{{ r.month }}</a></td><td class="num">{{ r.income|money }}</td>
-          <td class="num">{{ r.expense|money }}</td><td class="num {{ 'neg' if r.net < 0 }}">{{ r.net|money }}</td></tr>
-      {% endif %}{% endfor %}</tbody>
-    </table>
+    <summary class="small muted">Show as a table (month-end balances)</summary>
+    <div class="scroll"><table><thead></thead><tbody></tbody></table></div>
   </details>
   <script type="application/json" class="trend-data">{{ trend|tojson }}</script>
 </section>

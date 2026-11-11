@@ -113,26 +113,34 @@ def yearly(conn, year, start_balance=0.0):
             "inc": inc, "exp": exp, "net": net, "end": end}
 
 
-def monthly_totals(conn, last_month, count=24):
-    """Income, expenses and net for `count` months ending with last_month (oldest first).
-    Same rules as the reports: non-budget categories left out, uncategorized counts as an expense."""
-    first = add_months(date(last_month.year, last_month.month, 1), -(count - 1))
-    end = add_months(date(last_month.year, last_month.month, 1), 1) - timedelta(days=1)
-    rows = conn.execute(
-        """SELECT substr(t.date, 1, 7) AS m, COALESCE(c.kind, 'expense') AS kind, SUM(t.amount) AS s
-           FROM transactions t LEFT JOIN categories c ON c.id = t.category_id
-           WHERE t.date BETWEEN ? AND ? AND COALESCE(c.kind, 'expense') != 'transfer'
-           GROUP BY m, kind""", (first.isoformat(), end.isoformat())).fetchall()
-    sums = {}
-    for r in rows:
-        inc, exp = sums.get(r["m"], (0.0, 0.0))
-        sums[r["m"]] = (inc + r["s"], exp) if r["kind"] == "income" else (inc, exp - r["s"])
-    out = []
-    for i in range(count):
-        key = month_key(add_months(first, i))
-        inc, exp = sums.get(key, (0.0, 0.0))
-        out.append({"month": key, "income": round(inc, 2), "expense": round(exp, 2), "net": round(inc - exp, 2)})
-    return out
+def daily_balances(conn, months=24, today=None):
+    """End-of-day register balance for each account, every day from the first of the month
+    `months - 1` months ago through today. Days before an account's first transaction are None.
+    Credit cards and loans come out negative (money owed), so "all" is your net worth."""
+    today = today or date.today()
+    start = add_months(date(today.year, today.month, 1), -(months - 1))
+    dates = [start + timedelta(days=i) for i in range((today - start).days + 1)]
+    accounts = conn.execute("SELECT id, name, kind, closed FROM accounts ORDER BY closed, sort, name").fetchall()
+    series = []
+    for slot, a in enumerate(accounts):
+        before = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND date < ?",
+                              (a["id"], start.isoformat())).fetchone()[0]
+        first = conn.execute("SELECT MIN(date) FROM transactions WHERE account_id = ?", (a["id"],)).fetchone()[0]
+        per_day = {r["date"]: r["s"] for r in conn.execute(
+            "SELECT date, SUM(amount) AS s FROM transactions WHERE account_id = ? AND date BETWEEN ? AND ? GROUP BY date",
+            (a["id"], start.isoformat(), today.isoformat()))}
+        bal, values = before, []
+        for d in dates:
+            key = d.isoformat()
+            bal += per_day.get(key, 0)
+            values.append(round(bal, 2) if first and key >= first else None)
+        series.append({"id": a["id"], "name": a["name"], "kind": a["kind"], "closed": bool(a["closed"]),
+                       "slot": slot, "values": values})
+    combined = []
+    for i in range(len(dates)):
+        vals = [s["values"][i] for s in series if s["values"][i] is not None]
+        combined.append(round(sum(vals), 2) if vals else None)
+    return {"dates": [d.isoformat() for d in dates], "accounts": series, "all": combined}
 
 
 def budget_grid(conn, year):

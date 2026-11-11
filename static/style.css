@@ -125,9 +125,17 @@ table.grid12 .sticky { position: sticky; left: 0; background: var(--card); z-ind
 table.grid12 tr.section .sticky, table.grid12 tbody.summary .sticky { background: var(--bg); }
 
 /* ---- trends chart (colors validated for these surfaces: light #fff, dark #1a1d24) ---- */
-:root { --series-1: #2a78d6; --series-2: #eb6834; --gridline: #e8e8e4; --baseline: #c3c2b7; --tick: #6b7280; }
+:root {
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #6250d6; --series-8: #e34948;
+  --gridline: #e8e8e4; --baseline: #c3c2b7; --tick: #6b7280;
+}
 @media (prefers-color-scheme: dark) {
-  :root { --series-1: #3987e5; --series-2: #d95926; --gridline: #2c2f37; --baseline: #454952; --tick: #9ca3af; }
+  :root {
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+    --gridline: #2c2f37; --baseline: #454952; --tick: #9ca3af;
+  }
 }
 .trend { position: relative; }
 .chart { width: 100%; min-height: 240px; }
@@ -136,16 +144,24 @@ table.grid12 tr.section .sticky, table.grid12 tbody.summary .sticky { background
 .chart .baseline { stroke: var(--baseline); stroke-width: 1; }
 .chart .tick { fill: var(--tick); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart .tick.strong { fill: var(--text); font-weight: 700; }
-.chart .s1 { fill: var(--series-1); }
-.chart .s2 { fill: var(--series-2); }
-.chart .month { transition: opacity .1s; }
-.chart svg:has(.hover) .month:not(.hover) { opacity: .45; }
-.chart .hit { fill: transparent; cursor: pointer; outline: none; }
+.chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart .line.dashed { stroke-dasharray: 6 4; }
+.chart .line.s1 { stroke: var(--series-1); } .chart .dot.s1 { fill: var(--series-1); } .key.s1 { background: var(--series-1); }
+.chart .line.s2 { stroke: var(--series-2); } .chart .dot.s2 { fill: var(--series-2); } .key.s2 { background: var(--series-2); }
+.chart .line.s3 { stroke: var(--series-3); } .chart .dot.s3 { fill: var(--series-3); } .key.s3 { background: var(--series-3); }
+.chart .line.s4 { stroke: var(--series-4); } .chart .dot.s4 { fill: var(--series-4); } .key.s4 { background: var(--series-4); }
+.chart .line.s5 { stroke: var(--series-5); } .chart .dot.s5 { fill: var(--series-5); } .key.s5 { background: var(--series-5); }
+.chart .line.s6 { stroke: var(--series-6); } .chart .dot.s6 { fill: var(--series-6); } .key.s6 { background: var(--series-6); }
+.chart .line.s7 { stroke: var(--series-7); } .chart .dot.s7 { fill: var(--series-7); } .key.s7 { background: var(--series-7); }
+.chart .line.s8 { stroke: var(--series-8); } .chart .dot.s8 { fill: var(--series-8); } .key.s8 { background: var(--series-8); }
+.chart .line.sa { stroke: var(--series-1); } .chart .dot.sa { fill: var(--series-1); } .key.sa { background: var(--series-1); }
+.chart .dot { stroke: var(--card); stroke-width: 2; }  /* surface ring keeps dots legible on the lines */
+.chart .cross { stroke: var(--tick); stroke-width: 1; }
+.chart .endlabel { fill: var(--muted); font-size: 12px; }
+.chart .hit { fill: transparent; cursor: crosshair; outline: none; }
 .chart .hit:focus-visible { stroke: var(--accent); stroke-width: 1.5; }
 .legend { display: flex; gap: 1rem; font-size: .82rem; color: var(--muted); margin-top: -.4rem; }
-.swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: .35rem; vertical-align: -1px; }
-.swatch.s1 { background: var(--series-1); }
-.swatch.s2 { background: var(--series-2); }
+.key { display: inline-block; width: 14px; height: 2px; border-radius: 1px; margin-right: .4rem; vertical-align: 3px; }
 .tip { position: absolute; pointer-events: none; background: var(--card); border: 1px solid var(--line);
   border-radius: 8px; padding: .5rem .7rem; font-size: .82rem; box-shadow: 0 4px 14px rgba(0,0,0,.18); min-width: 180px; z-index: 5; }
 .tip div { display: flex; align-items: center; gap: .1rem; margin-top: .2rem; }
@@ -161,3 +177,8 @@ table.grid12 tr.section .sticky, table.grid12 tbody.summary .sticky { background
 .flash.update { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--text); }
 .flash.update form { margin: 0 0 0 auto; }
 pre.notes { white-space: pre-wrap; font: inherit; font-size: .88rem; background: var(--bg); padding: .7rem; border-radius: 6px; max-height: 18rem; overflow: auto; }
+.acct-picks { display: flex; flex-wrap: wrap; gap: .4rem; margin: .2rem 0 .6rem; }
+.pick { display: inline-flex; align-items: center; gap: .1rem; border: 1px solid var(--line); border-radius: 99px;
+  padding: .2rem .7rem .2rem .5rem; font-size: .85rem; cursor: pointer; user-select: none; }
+.pick:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.pick input { margin: 0 .3rem 0 0; }

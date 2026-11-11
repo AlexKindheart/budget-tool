@@ -165,7 +165,7 @@ def overview():
     last = reports.add_months(first, 1) - timedelta(days=1)
     with db.connect() as conn:
         rep = reports.budget_vs_actual(conn, first, last)
-        trend = reports.monthly_totals(conn, first, 24)
+        trend = reports.daily_balances(conn, 24)
         accounts = all_accounts(conn, include_closed=False)
         balances = account_balances(conn)
         recent = conn.execute(
