@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Export{% endblock %}
+{% block content %}
+<div class="bar">
+  <h1>Export to Excel</h1>
+</div>
+
+{% if saved %}
+  <section class="card saved">
+    <div>
+      <strong>Spreadsheet saved</strong>
+      <div class="muted small">{{ saved }}</div>
+    </div>
+    <form method="post" action="{{ url_for('export_open') }}" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button class="btn primary" name="action" value="open">Open it</button>
+      <button class="btn" name="action" value="folder">Show in folder</button>
+    </form>
+  </section>
+{% endif %}
+
+<form method="post" class="export" data-export data-preview-url="{{ url_for('api_export_preview') }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+
+  <section class="card">
+    <h2>Dates</h2>
+    <div class="presets" role="group" aria-label="Quick date ranges">
+      {% for name, a, b in presets %}
+        <button type="button" class="btn ghost small{{ ' on' if a == start and b == end }}" data-from="{{ a.isoformat() }}" data-to="{{ b.isoformat() }}">{{ name }}</button>
+      {% endfor %}
+    </div>
+    <div class="inline dates">
+      <label>From <input type="date" name="from" value="{{ start.isoformat() }}" required></label>
+      <label>To <input type="date" name="to" value="{{ end.isoformat() }}" required></label>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <div class="bar tight"><h2>Accounts</h2>
+        <span class="small"><a href="#" data-check="account" data-to="1">All</a> · <a href="#" data-check="account" data-to="0">None</a></span></div>
+      {% for a in accounts %}
+        <label class="checkrow"><input type="checkbox" name="account" value="{{ a.id }}" {{ 'checked' if a.id in ids }}>
+          {{ a.name }}{% if a.closed %} <span class="muted small">(closed)</span>{% endif %}</label>
+      {% else %}
+        <p class="muted">No accounts yet. Add one on the <a href="{{ url_for('accounts') }}">Accounts</a> screen.</p>
+      {% endfor %}
+    </section>
+
+    <section class="card">
+      <h2>Sheets</h2>
+      {% for key, name, about in sheet_list %}
+        <label class="checkrow"><input type="checkbox" name="sheet" value="{{ key }}" {{ 'checked' if key in sheets }}>
+          <span><strong>{{ name }}</strong> <span class="muted small">{{ about }}</span></span></label>
+      {% endfor %}
+    </section>
+  </div>
+
+  <section class="card go">
+    <div class="muted" data-preview aria-live="polite">
+      {{ '{:,}'.format(info.count) }} transaction{{ '' if info.count == 1 else 's' }} ·
+      {{ info.money_in|money }} in · {{ info.money_out|money }} out
+    </div>
+    <button class="btn primary">Save spreadsheet…</button>
+  </section>
+</form>
+{% endblock %}

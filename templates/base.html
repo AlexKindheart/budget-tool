@@ -16,6 +16,7 @@
       <a href="{{ url_for('register') }}" class="{{ 'on' if ep in ('register', 'register_edit') }}">Register</a>
       <a href="{{ url_for('budget') }}" class="{{ 'on' if ep == 'budget' }}">Budget</a>
       <a href="{{ url_for('reports_page') }}" class="{{ 'on' if ep == 'reports_page' }}">Reports</a>
+      <a href="{{ url_for('export_page') }}" class="{{ 'on' if ep == 'export_page' }}">Export</a>
       <a href="{{ url_for('accounts') }}" class="{{ 'on' if ep == 'accounts' }}">Accounts</a>
       <a href="{{ url_for('categories_page') }}" class="{{ 'on' if ep == 'categories_page' }}">Categories</a>
       <a href="{{ url_for('settings') }}" class="{{ 'on' if ep == 'settings' }}">Settings</a>

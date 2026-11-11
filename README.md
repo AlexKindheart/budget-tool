@@ -14,6 +14,7 @@ yearly budget, budget-vs-actual reports), except your bank transactions fill the
 | **Reports** | Monthly or year-to-date budget vs. actual, a yearly month-by-month report, and a weekly / bi-weekly report |
 | **Accounts** | Accounts with savings goals and % reached, cleared and total balances, what the bank says, and bank connections |
 | **Categories** | Income, expense and non-budget categories ([Transfer], [Beginning Balance]), plus payee rules |
+| **Export** | Saves an Excel workbook for any date range and accounts: budget vs. actual, every transaction (sortable table), each category by month, and account balances |
 | **Settings** | Plaid keys, auto-sync interval, and app updates |
 
 How the numbers work:
@@ -37,6 +38,15 @@ How the numbers work:
 2. Open Budget Tool from the shortcut.
 
 (Developers can also run it straight from source with `py budget_tool.py`.)
+
+### Installer for someone else
+
+Double-click **`build-installer.bat`** to make `release\BudgetTool-Setup.exe`, a normal Windows installer you can send
+to a friend (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`). It
+installs for that user without admin rights, adds Start Menu and Desktop shortcuts, and appears in **Settings → Apps**
+so it can be uninstalled. Uninstalling leaves their data in `%APPDATA%\BudgetTool`. Every GitHub release also includes
+`BudgetTool-Setup.exe`. The installer isn't code-signed, so Windows SmartScreen shows "Windows protected your PC"
+the first time: click **More info → Run anyway**.
 
 ## Connect your bank
 
@@ -90,5 +100,6 @@ The app runs a small server that only this computer can reach, and only with a k
 | `paths.py` | Where app files and your data live |
 | `templates/`, `static/` | Screen layouts, styles, scripts |
 | `build.bat` | Builds the .exe, installs it, makes shortcuts |
+| `build-installer.bat`, `installer.iss` | Builds `BudgetTool-Setup.exe` to send to others |
 | `release.bat`, `.github/workflows/release.yml` | Publish a version as a GitHub release |
 | `VERSION` | The app's version number |

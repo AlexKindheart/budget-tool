@@ -1,12 +1,34 @@
 {% extends "base.html" %}
-{% block title %}{{ label }}{% endblock %}
+{% block title %}{{ p.label }}{% endblock %}
 {% block content %}
 {% set t = rep.totals %}
+{# Where "see these transactions" links go: one month, or a date span for year / week / all time. #}
+{% macro reg_link(category) -%}
+  {%- if p.period == 'month' -%}{{ url_for('register', month=p.selected, category=category) }}
+  {%- else -%}{{ url_for('register', month='range', category=category, **{'from': p.start.isoformat(), 'to': p.end.isoformat()}) }}{%- endif -%}
+{%- endmacro %}
 <div class="bar">
-  <div class="month">
-    <a class="btn ghost" href="?month={{ prev }}">&larr;</a>
-    <h1>{{ label }}</h1>
-    <a class="btn ghost" href="?month={{ nxt }}">&rarr;</a>
+  <div class="periodnav">
+    <div class="seg" role="group" aria-label="Time span">
+      {% for key, name in [('all', 'All Time'), ('year', 'Year'), ('month', 'Month'), ('week', 'Week')] %}
+        <a href="{{ url_for('overview', period=key) }}" class="{{ 'on' if p.period == key }}"{% if p.period == key %} aria-current="true"{% endif %}>{{ name }}</a>
+      {% endfor %}
+    </div>
+    <div class="month">
+      {% if p.prev %}<a class="btn ghost" href="{{ p.prev }}" aria-label="Previous {{ p.period }}">&larr;</a>{% endif %}
+      {% if p.choices %}
+        <form method="get" class="pickperiod">
+          <input type="hidden" name="period" value="{{ p.period }}">
+          <select name="{{ p.period }}" onchange="this.form.submit()" aria-label="Choose a {{ p.period }}">
+            {% for value, text in p.choices %}<option value="{{ value }}" {{ 'selected' if value == p.selected }}>{{ text }}</option>{% endfor %}
+          </select>
+          <noscript><button class="btn">Go</button></noscript>
+        </form>
+      {% else %}
+        <h1>{{ p.label }}</h1>
+      {% endif %}
+      {% if p.next %}<a class="btn ghost" href="{{ p.next }}" aria-label="Next {{ p.period }}">&rarr;</a>{% endif %}
+    </div>
   </div>
   <div class="actions">
     {% if has_items %}<span class="muted small">Bank sync: {{ last_synced|ago }}</span>
@@ -51,10 +73,10 @@
       </div>
     </div>
     <div class="seg" role="group" aria-label="Time range">
-      <button type="button" data-range="week">Week</button>
-      <button type="button" data-range="month">Month</button>
-      <button type="button" data-range="year" class="on">Year</button>
       <button type="button" data-range="all">All Time</button>
+      <button type="button" data-range="year" class="on">Year</button>
+      <button type="button" data-range="month">Month</button>
+      <button type="button" data-range="week">Week</button>
     </div>
   </div>
   <div class="acct-picks" role="group" aria-label="Accounts to show">
@@ -74,9 +96,10 @@
 
 <div class="grid">
   <section class="card">
-    <div class="bar tight"><h2>Expenses</h2><a class="small" href="{{ url_for('reports_page', month=month) }}">Full report &rarr;</a></div>
+    <div class="bar tight"><h2>Expenses</h2>
+      <a class="small" href="{{ url_for('reports_page', view='yearly', year=p.selected) if p.period == 'year' else url_for('reports_page', month=p.start.strftime('%Y-%m') if p.period != 'all' else month) }}">Full report &rarr;</a></div>
     {% for r in rep.expense|sort(attribute='actual', reverse=true) %}
-      <a class="cat" href="{{ url_for('register', month=month, category=r.id) }}">
+      <a class="cat" href="{{ reg_link(r.id) }}">
         <div class="cat-head">
           <span>{{ r.name }}</span>
           <span>{{ r.actual|money }}{% if r.budget %} <span class="muted">of {{ r.budget|money }}</span>{% endif %}</span>
@@ -85,7 +108,7 @@
           <div class="meter"><div class="{{ 'over' if p > 100 else ('near' if p > 85 else '') }}" style="width: {{ [p, 100]|min }}%"></div></div>
         {% endif %}
       </a>
-    {% else %}<p class="muted">No spending this month.</p>{% endfor %}
+    {% else %}<p class="muted">{{ 'No spending yet.' if p.period == 'all' else 'No spending this ' ~ p.period ~ '.' }}</p>{% endfor %}
   </section>
 
   <div>

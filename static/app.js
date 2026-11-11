@@ -36,3 +36,41 @@
     recalc();
   }));
 })();
+
+// Export screen: quick date ranges, All / None for accounts, and a live count of what will be exported.
+(function () {
+  const form = document.querySelector('[data-export]');
+  if (!form) return;
+  const from = form.querySelector('input[name="from"]');
+  const to = form.querySelector('input[name="to"]');
+  const presets = [...form.querySelectorAll('[data-from]')];
+  const out = form.querySelector('[data-preview]');
+  const money = (v) => '$' + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  function markPreset() {
+    presets.forEach((b) => b.classList.toggle('on', b.dataset.from === from.value && b.dataset.to === to.value));
+  }
+  let timer;
+  function refresh() {
+    markPreset();
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const q = new URLSearchParams(new FormData(form));
+      q.delete('csrf');
+      if (!q.has('account')) q.append('account', '');  // none ticked: count nothing, not everything
+      fetch(form.dataset.previewUrl + '?' + q.toString())
+        .then((r) => r.json())
+        .then((d) => {
+          out.textContent = `${d.count.toLocaleString()} transaction${d.count === 1 ? '' : 's'} · ${money(d.money_in)} in · ${money(d.money_out)} out`;
+        })
+        .catch(() => {});
+    }, 150);
+  }
+  presets.forEach((b) => b.addEventListener('click', () => { from.value = b.dataset.from; to.value = b.dataset.to; refresh(); }));
+  form.querySelectorAll('[data-check]').forEach((a) => a.addEventListener('click', (e) => {
+    e.preventDefault();
+    form.querySelectorAll(`input[name="${a.dataset.check}"]`).forEach((c) => { c.checked = a.dataset.to === '1'; });
+    refresh();
+  }));
+  form.addEventListener('change', refresh);
+})();

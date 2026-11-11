@@ -5,15 +5,17 @@
 {% set qs = '&account=' ~ account ~ '&category=' ~ cat ~ '&q=' ~ (q|urlencode) ~ ('&uncleared=1' if uncleared else '') %}
 <div class="bar">
   <div class="month">
-    {% if month != 'all' %}<a class="btn ghost" href="?month={{ prev }}{{ qs }}">&larr;</a>{% endif %}
+    {% if month not in ('all', 'range') %}<a class="btn ghost" href="?month={{ prev }}{{ qs }}">&larr;</a>{% endif %}
     <h1>{{ label }}</h1>
-    {% if month != 'all' %}<a class="btn ghost" href="?month={{ nxt }}{{ qs }}">&rarr;</a>{% endif %}
+    {% if month not in ('all', 'range') %}<a class="btn ghost" href="?month={{ nxt }}{{ qs }}">&rarr;</a>{% endif %}
   </div>
   <form class="filters" method="get">
     <select name="month" onchange="this.form.submit()">
-      <option value="{{ month if month != 'all' else today.strftime('%Y-%m') }}" {{ 'selected' if month != 'all' }}>One month</option>
+      <option value="{{ month if month not in ('all', 'range') else today.strftime('%Y-%m') }}" {{ 'selected' if month not in ('all', 'range') }}>One month</option>
+      {% if span %}<option value="range" selected>These dates</option>{% endif %}
       <option value="all" {{ 'selected' if month == 'all' }}>All dates</option>
     </select>
+    {% if span %}<input type="hidden" name="from" value="{{ span[0].isoformat() }}"><input type="hidden" name="to" value="{{ span[1].isoformat() }}">{% endif %}
     <select name="account" onchange="this.form.submit()">
       <option value="">All accounts</option>
       {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if account == a.id|string }}>{{ a.name }}</option>{% endfor %}

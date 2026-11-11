@@ -3,17 +3,21 @@
 The server only listens on 127.0.0.1 and every request needs the per-launch key
 (LAUNCH_KEY), so other programs and websites can't read your data.
 """
+import io
 import os
 import secrets
+import subprocess
 import threading
 import time
 import webbrowser
 from datetime import date, datetime, timedelta, timezone
 
+import webview
 from flask import (Flask, abort, flash, jsonify, redirect, render_template, request,
-                   session, url_for)
+                   send_file, session, url_for)
 
 import db
+import export
 import plaid_client as plaid
 import reports
 import updater
@@ -159,12 +163,71 @@ def run_sync_and_flash():
 
 # ---------------------------------------------------------------- overview
 
+def week_start(d):
+    """Sunday on or before d (weeks run Sunday - Saturday, like the weekly report)."""
+    return d - timedelta(days=(d.weekday() + 1) % 7)
+
+
+def week_label(start):
+    end = start + timedelta(days=6)
+    if start.year != end.year:
+        return f"{start:%b} {start.day}, {start.year} – {end:%b} {end.day}, {end.year}"
+    if start.month != end.month:
+        return f"{start:%b} {start.day} – {end:%b} {end.day}, {end.year}"
+    return f"{start:%b} {start.day} – {end.day}, {end.year}"
+
+
+def overview_period(args, earliest):
+    """The time span the Overview summarizes: all time, a year, a month (default) or a week.
+    Year / month / week default to the current one. `choices` fills the dropdown, newest first."""
+    today = date.today()
+    earliest = earliest or today
+    kind = args.get("period", "month")
+    p = {"period": kind, "scale": 1.0, "months": None, "prev": None, "next": None, "choices": [], "selected": ""}
+    if kind == "all":
+        p.update(start=min(earliest, today), end=today, label="All Time")
+    elif kind == "year":
+        try:
+            y = min(max(int(args.get("year", "")), 1900), 9998)
+        except ValueError:
+            y = today.year
+        p.update(start=date(y, 1, 1), end=date(y, 12, 31), label=str(y), selected=str(y),
+                 prev=url_for("overview", period="year", year=y - 1), next=url_for("overview", period="year", year=y + 1))
+        years = range(max(today.year, y), min(earliest.year, y) - 1, -1)
+        p["choices"] = [(str(v), str(v)) for v in years]
+    elif kind == "week":
+        try:
+            s = week_start(date.fromisoformat(args.get("week", "")))
+        except ValueError:
+            s = week_start(today)
+        prev_w, next_w = s - timedelta(days=7), s + timedelta(days=7)
+        p.update(start=s, end=s + timedelta(days=6), label=week_label(s), selected=s.isoformat(),
+                 scale=12 / 52, months=[reports.month_key(s)],
+                 prev=url_for("overview", period="week", week=prev_w.isoformat()),
+                 next=url_for("overview", period="week", week=next_w.isoformat()))
+        w, stop = max(week_start(today), s), min(week_start(earliest), s)
+        while w >= stop:
+            p["choices"].append((w.isoformat(), week_label(w)))
+            w -= timedelta(days=7)
+    else:
+        first = parse_month(args.get("month"))
+        p.update(period="month", start=first, end=reports.add_months(first, 1) - timedelta(days=1),
+                 label=first.strftime("%B %Y"), selected=reports.month_key(first),
+                 prev=url_for("overview", period="month", month=reports.month_key(reports.add_months(first, -1))),
+                 next=url_for("overview", period="month", month=reports.month_key(reports.add_months(first, 1))))
+        m, stop = max(today.replace(day=1), first), min(earliest.replace(day=1), first)
+        while m >= stop:
+            p["choices"].append((reports.month_key(m), m.strftime("%B %Y")))
+            m = reports.add_months(m, -1)
+    return p
+
+
 @app.route("/")
 def overview():
-    first = parse_month(request.args.get("month"))
-    last = reports.add_months(first, 1) - timedelta(days=1)
     with db.connect() as conn:
-        rep = reports.budget_vs_actual(conn, first, last)
+        earliest = conn.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
+        p = overview_period(request.args, date.fromisoformat(earliest[:10]) if earliest else None)
+        rep = reports.budget_vs_actual(conn, p["start"], p["end"], budget_scale=p["scale"], months=p["months"])
         trend = reports.daily_balances(conn)
         accounts = all_accounts(conn, include_closed=False)
         balances = account_balances(conn)
@@ -175,8 +238,7 @@ def overview():
         synced = last_synced(conn)
         has_items = conn.execute("SELECT 1 FROM items").fetchone() is not None
     return render_template(
-        "overview.html", month=reports.month_key(first), label=first.strftime("%B %Y"),
-        prev=reports.month_key(reports.add_months(first, -1)), nxt=reports.month_key(reports.add_months(first, 1)),
+        "overview.html", p=p, month=reports.month_key(p["start"] if p["period"] == "month" else date.today()),
         rep=rep, trend=trend, accounts=accounts, balances=balances, recent=recent, last_synced=synced,
         has_items=has_items)
 
@@ -192,7 +254,17 @@ def register():
     uncleared = request.args.get("uncleared") == "1"
 
     where, params = ["1=1"], []
-    if month_raw != "all":
+    # month=range&from=YYYY-MM-DD&to=YYYY-MM-DD: a date span (links from the Overview's year / week / all time).
+    span = None
+    if month_raw == "range":
+        try:
+            span = (date.fromisoformat(request.args.get("from", "")), date.fromisoformat(request.args.get("to", "")))
+        except ValueError:
+            month_raw = reports.month_key(date.today())
+    if span:
+        where.append("t.date BETWEEN ? AND ?")
+        params += [span[0].isoformat(), span[1].isoformat()]
+    elif month_raw != "all":
         first = parse_month(month_raw)
         month_raw = reports.month_key(first)
         where.append("substr(t.date, 1, 7) = ?")
@@ -225,10 +297,14 @@ def register():
             running[r["id"]] = totals[r["account_id"]]
         categories = all_categories(conn)
         accounts = all_accounts(conn)
-    month_d = parse_month(month_raw) if month_raw != "all" else date.today().replace(day=1)
+    month_d = parse_month(month_raw) if month_raw not in ("all", "range") else date.today().replace(day=1)
+    if span:
+        label = f"{span[0]:%b} {span[0].day}, {span[0].year} – {span[1]:%b} {span[1].day}, {span[1].year}"
+    else:
+        label = "All dates" if month_raw == "all" else month_d.strftime("%B %Y")
     return render_template(
         "register.html", txs=txs, running=running, categories=categories, accounts=accounts,
-        month=month_raw, label=("All dates" if month_raw == "all" else month_d.strftime("%B %Y")),
+        month=month_raw, label=label, span=span,
         prev=reports.month_key(reports.add_months(month_d, -1)), nxt=reports.month_key(reports.add_months(month_d, 1)),
         account=account, cat=cat, q=q, uncleared=uncleared,
         total_in=sum(t["amount"] for t in txs if t["amount"] > 0),
@@ -586,6 +662,115 @@ def categories_page():
 
 
 # ---------------------------------------------------------------- settings
+
+# ---------------------------------------------------------------- export (Excel workbook)
+
+XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def export_choices(src, accounts):
+    """Dates, accounts and sheets from the form (or the address after saving); defaults: this year, everything."""
+    today = date.today()
+    try:
+        start = date.fromisoformat(src.get("from", ""))
+    except ValueError:
+        start = date(today.year, 1, 1)
+    try:
+        end = date.fromisoformat(src.get("to", ""))
+    except ValueError:
+        end = today
+    if end < start:
+        start, end = end, start
+    known = [a["id"] for a in accounts]
+    picked = src.getlist("account") if "account" in src or "sheet" in src else [str(i) for i in known]
+    ids = [i for i in known if str(i) in picked]
+    sheets = [k for k in export.SHEET_KEYS if k in src.getlist("sheet")] if "sheet" in src or "account" in src \
+        else list(export.SHEET_KEYS)
+    return start, end, ids, sheets
+
+
+def export_presets(earliest):
+    today = date.today()
+    this_month = today.replace(day=1)
+    last_month = reports.add_months(this_month, -1)
+    return [
+        ("This month", this_month, today),
+        ("Last month", last_month, this_month - timedelta(days=1)),
+        ("This year", date(today.year, 1, 1), today),
+        ("Last year", date(today.year - 1, 1, 1), date(today.year - 1, 12, 31)),
+        ("Last 12 months", reports.add_months(this_month, -11), today),
+        ("All time", min(earliest or today, today), today),
+    ]
+
+
+@app.route("/export", methods=["GET", "POST"])
+def export_page():
+    with db.connect() as conn:
+        accounts = all_accounts(conn)
+        start, end, ids, sheets = export_choices(request.form if request.method == "POST" else request.args, accounts)
+        keep = {"from": start.isoformat(), "to": end.isoformat(), "account": ids, "sheet": sheets}
+        if request.method == "POST":
+            if not ids or not sheets:
+                flash("Pick at least one account and one sheet.", "error")
+                return redirect(url_for("export_page", **keep))
+            data = export.build(conn, start, end, ids, sheets)
+            filename = f"Budget {start.isoformat()} to {end.isoformat()}.xlsx"
+            window = webview.windows[0] if webview.windows else None
+            if window is None:  # running in a normal browser (developers): just download it
+                return send_file(io.BytesIO(data), mimetype=XLSX, as_attachment=True, download_name=filename)
+            folder = db.get_setting(conn, "export_dir") or os.path.join(os.path.expanduser("~"), "Downloads")
+            if not os.path.isdir(folder):
+                folder = os.path.expanduser("~")
+            kind = webview.FileDialog.SAVE if hasattr(webview, "FileDialog") else webview.SAVE_DIALOG
+            chosen = window.create_file_dialog(kind, directory=folder, save_filename=filename,
+                                               file_types=("Excel workbook (*.xlsx)",))
+            if not chosen:  # cancelled
+                return redirect(url_for("export_page", **keep))
+            path = chosen if isinstance(chosen, str) else chosen[0]
+            if not path.lower().endswith(".xlsx"):
+                path += ".xlsx"
+            try:
+                with open(path, "wb") as f:
+                    f.write(data)
+            except OSError as e:
+                flash(f"Couldn't save the spreadsheet ({e.strerror or e}). If that file is open in Excel, "
+                      "close it and try again, or pick another name.", "error")
+                return redirect(url_for("export_page", **keep))
+            db.set_setting(conn, "export_dir", os.path.dirname(path))
+            db.set_setting(conn, "last_export", path)
+            return redirect(url_for("export_page", saved=1, **keep))
+        earliest = conn.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
+        presets = export_presets(date.fromisoformat(earliest[:10]) if earliest else None)
+        info = export.preview(conn, start, end, ids)
+        last = db.get_setting(conn, "last_export") if request.args.get("saved") else None
+    return render_template("export.html", accounts=accounts, start=start, end=end, ids=ids, sheets=sheets,
+                           sheet_list=export.SHEETS, presets=presets, info=info,
+                           saved=last if last and os.path.isfile(last) else None)
+
+
+@app.route("/api/export-preview")
+def api_export_preview():
+    with db.connect() as conn:
+        start, end, ids, _ = export_choices(request.args, all_accounts(conn))
+        return jsonify(export.preview(conn, start, end, ids))
+
+
+@app.route("/export/open", methods=["POST"])
+def export_open():
+    """Open the spreadsheet you just saved, or show it in File Explorer. Only ever the last saved file."""
+    with db.connect() as conn:
+        path = db.get_setting(conn, "last_export")
+    if not path or not os.path.isfile(path):
+        flash("That spreadsheet isn't there anymore.", "error")
+    elif request.form.get("action") == "folder":
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+    else:
+        try:
+            os.startfile(path)
+        except OSError:
+            flash("Couldn't open it. Is Excel (or another spreadsheet app) installed?", "error")
+    return back("export_page")
+
 
 @app.route("/settings", methods=["GET", "POST"])
 def settings():

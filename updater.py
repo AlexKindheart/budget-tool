@@ -187,11 +187,20 @@ Start-Sleep -Milliseconds 800
 $backup = Join-Path $Work 'previous'
 robocopy $Dst $backup /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { Note "Couldn't back up the current version (robocopy $LASTEXITCODE); update cancelled"; Start-Process (Join-Path $Dst 'BudgetTool.exe'); exit 1 }
-robocopy $Src $Dst /MIR /R:5 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+# /XF keeps the uninstaller that BudgetTool-Setup.exe puts in the folder (it isn't in the update package).
+robocopy $Src $Dst /MIR /XF unins*.exe unins*.dat /R:5 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) {
   Note "Copying the new version failed (robocopy $LASTEXITCODE); restoring the previous version"
-  robocopy $backup $Dst /MIR /R:5 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-} else { Note "Update installed" }
+  robocopy $backup $Dst /MIR /XF unins*.exe unins*.dat /R:5 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+} else {
+  Note "Update installed"
+  # Installed with BudgetTool-Setup.exe? Show the new version number in Windows' Installed apps list too.
+  $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{CCEBBAD2-57A2-4B54-92CB-7C7F31A7F483}_is1'
+  $verFile = Join-Path $Dst '_internal\VERSION'
+  if ((Test-Path $key) -and (Test-Path $verFile)) {
+    Set-ItemProperty -Path $key -Name DisplayVersion -Value (Get-Content $verFile -Raw).Trim() -ErrorAction SilentlyContinue
+  }
+}
 Start-Process (Join-Path $Dst 'BudgetTool.exe')
 Start-Sleep -Seconds 2
 Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue

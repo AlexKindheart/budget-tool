@@ -39,9 +39,18 @@ jobs:
           $hash = (Get-FileHash BudgetTool-windows.zip -Algorithm SHA256).Hash.ToLower()
           "$hash  BudgetTool-windows.zip" | Out-File -Encoding ascii BudgetTool-windows.zip.sha256
 
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; if ($LASTEXITCODE) { throw "Couldn't install Inno Setup" } }
+          $v = (Get-Content VERSION -Raw).Trim()
+          & $iscc /Q "/DAppVersion=$v" installer.iss
+          if ($LASTEXITCODE) { throw "Inno Setup failed" }
+
       - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create $env:TAG BudgetTool-windows.zip BudgetTool-windows.zip.sha256 --title "Budget Tool $env:TAG" --generate-notes
+        run: gh release create $env:TAG BudgetTool-windows.zip BudgetTool-windows.zip.sha256 release/BudgetTool-Setup.exe --title "Budget Tool $env:TAG" --generate-notes
