@@ -94,7 +94,7 @@
       <h1>{{ year }} Income &amp; Expenses</h1>
       <a class="btn ghost" href="?view=yearly&year={{ year + 1 }}">&rarr;</a>
     </div>
-    <span class="muted small">Starting balance {{ start_balance|money }} (set on the <a href="{{ url_for('budget', year=year) }}">Budget</a> screen)</span>
+    <span class="muted small">All accounts on Dec 31, {{ year - 1 }}: <strong class="{{ 'neg' if y_.start < 0 }}">{{ y_.start|money }}</strong></span>
   </div>
   <section class="card scroll">
     <table class="grid12">
@@ -104,7 +104,9 @@
         <tr><td class="sticky">Total Income</td>{% for v in y_.inc %}<td class="num">{{ v|money }}</td>{% endfor %}<td class="num strong">{{ y_.inc|sum|money }}</td><td class="num muted">{{ (y_.inc|sum / 12)|money }}</td></tr>
         <tr><td class="sticky">Total Expenses</td>{% for v in y_.exp %}<td class="num">{{ v|money }}</td>{% endfor %}<td class="num strong">{{ y_.exp|sum|money }}</td><td class="num muted">{{ (y_.exp|sum / 12)|money }}</td></tr>
         <tr class="strong"><td class="sticky">NET (Income - Expenses)</td>{% for v in y_.net %}<td class="num {{ 'neg' if v < 0 }}">{{ v|money }}</td>{% endfor %}<td class="num">{{ y_.net|sum|money }}</td><td></td></tr>
-        <tr><td class="sticky">End Balance</td>{% for v in y_.end %}<td class="num">{{ v|money }}</td>{% endfor %}<td colspan="2"></td></tr>
+        <tr><td class="sticky" title="Money that changed your balances without being income or spending: transfers to or from accounts that aren't in Budget Tool, and opening balances. Transfers between two of your own accounts cancel out.">Transfers &amp; other <span class="muted small">(?)</span></td>
+          {% for v in y_.other %}<td class="num muted">{{ v|money if v else '-' }}</td>{% endfor %}<td class="num">{{ y_.other|sum|money }}</td><td></td></tr>
+        <tr class="strong"><td class="sticky">End Balance <span class="muted small">(all accounts)</span></td>{% for v in y_.end %}<td class="num {{ 'neg' if v is not none and v < 0 }}">{{ v|money if v is not none else '' }}</td>{% endfor %}<td colspan="2"></td></tr>
       </tbody>
       {% for kind, title in [('income', 'INCOME'), ('expense', 'EXPENSES')] %}
       <tbody>

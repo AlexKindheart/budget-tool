@@ -1,7 +1,8 @@
 // Overview "Balances" chart: end-of-day balance per account as lines (inline SVG, no libraries).
-// "All accounts" = one combined line (net worth). Ticking accounts compares them, one line each,
-// over the same week / month / year / all time. Each account keeps its own color whatever else is ticked.
-// One line: big balance up top with the change over the range; hovering scrubs that number.
+// "All accounts" = one combined line (net worth). Ticking accounts compares them, one line each.
+// The time span is whatever is picked at the top of the Overview (All Time / Year / Month / Week);
+// the server sends exactly those days. Each account keeps its own color whatever else is ticked.
+// One line: big balance up top with the change over the period picked at the top; hovering scrubs that number.
 // Several lines: names and balances at the line ends, plus a tooltip on hover.
 (function () {
   const root = document.querySelector('[data-trend]');
@@ -21,15 +22,12 @@
   const NS = 'http://www.w3.org/2000/svg';
   const byId = Object.fromEntries(data.accounts.map((a) => [String(a.id), a]));
   const calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const RANGES = { week: 'past week', month: 'past month', year: 'past year', all: 'all time' };
 
   const load = (k, fallback) => { try { return localStorage.getItem(k) || fallback; } catch (e) { return fallback; } };
   const save = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* storage unavailable */ } };
-  let range = load('balanceRange', 'year');
-  if (!(range in RANGES)) range = 'year';
   let picked = load('balanceAccounts', 'all').split(',').filter((id) => id === 'all' || byId[id]);
   if (!picked.length || picked.includes('all')) picked = ['all'];
-  let animate = true;  // draw the lines in after a change of accounts or range, not on window resize
+  let animate = true;  // draw the lines in on load and after a change of accounts, not on window resize
 
   const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const money = (v) => (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -40,8 +38,16 @@
     if (a >= 1e3) return s + '$' + +(a / 1e3).toFixed(1) + 'K';
     return s + '$' + Math.round(a).toLocaleString();
   };
+  // Axis labels: enough decimals that neighbouring gridlines never read the same ($38.8K, $39.0K, $39.2K).
+  const tickLabel = (v, step, biggest) => {
+    const [unit, suffix] = biggest >= 1e6 ? [1e6, 'M'] : biggest >= 1e4 ? [1e3, 'K'] : [1, ''];
+    const x = step / unit;
+    let d = 0;
+    while (d < 3 && Math.abs(Math.round(x * 10 ** d) - x * 10 ** d) > 1e-6) d++;
+    const a = Math.abs(v) / unit;
+    return (v < 0 ? '-' : '') + '$' + a.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }) + suffix;
+  };
   const parse = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
-  const isoOf = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const fmtDay = (iso) => parse(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
   const fmtMonth = (iso, withYear) => parse(iso).toLocaleDateString(undefined, withYear ? { month: 'short', year: 'numeric' } : { month: 'short' });
   const f = (v) => v.toFixed(1);
@@ -56,26 +62,6 @@
     return [1, 2, 2.5, 5, 10].map((s) => s * mag).find((s) => s >= raw) || mag * 10;
   };
   const firstValue = (values) => values.find((v) => v != null);
-
-  // Index of the first day in the chosen range (rolling: the last 7 days, since this day last month / last year).
-  function rangeStart() {
-    if (range === 'all') {
-      const i = data.all.findIndex((v) => v != null);   // from the first transaction, not empty days
-      return Math.max(0, i);
-    }
-    const t = parse(data.dates[data.dates.length - 1]);
-    let s;
-    if (range === 'week') {
-      s = new Date(t.getFullYear(), t.getMonth(), t.getDate() - 6);
-    } else {
-      const back = range === 'month' ? 1 : 12;
-      const first = new Date(t.getFullYear(), t.getMonth() - back, 1);
-      const days = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
-      s = new Date(first.getFullYear(), first.getMonth(), Math.min(t.getDate(), days));
-    }
-    const iso = isoOf(s);
-    return Math.max(0, data.dates.findIndex((d) => d >= iso));
-  }
 
   // Smooth curve through the points that never overshoots them (monotone cubic), so a curve
   // never shows a balance the account didn't actually have.
@@ -185,11 +171,18 @@
     heroDelta.className = 'delta ' + dir;
     heroDelta.textContent = (dir === 'up' ? '▲ +' : dir === 'down' ? '▼ -' : '± ') + money(Math.abs(diff)) +
       (pct != null && dir !== 'flat' ? ` (${Math.abs(pct) >= 100 ? Math.round(Math.abs(pct)) : Math.abs(pct).toFixed(1)}%)` : '');
-    heroWhen.textContent = hovering ? fmtDay(dates[i]) : RANGES[range];
+    heroWhen.textContent = hovering ? fmtDay(dates[i]) : data.caption || '';
   }
 
   function render() {
-    const start = rangeStart();
+    if (!data.dates.length) {  // a span that hasn't started yet
+      box.innerHTML = '<p class="muted chart-empty">No balances yet for this period.</p>';
+      hero.hidden = true;
+      subtitle.textContent = '';
+      thead.innerHTML = ''; tbody.innerHTML = '';
+      return;
+    }
+    const start = 0;
     const dates = data.dates.slice(start);
     const series = currentSeries(start);
     const n = dates.length;
@@ -212,7 +205,7 @@
     }
     const W = Math.max(box.clientWidth, 280), H = 280;
     const labelW = ends.length ? Math.min(150, Math.max(...ends.map((e) => Math.max(e.name.length, money(e.v).length))) * 6.6 + 18) : 16;
-    const pad = { l: 54, r: labelW, t: 18, b: 30 };
+    const pad = { l: 64, r: labelW, t: 18, b: 30 };
     const plotW = W - pad.l - pad.r, plotH = H - pad.t - pad.b, bottom = pad.t + plotH;
     const vals = series.flatMap((s) => s.values).filter((v) => v != null);
     let lo = vals.length ? Math.min(...vals) : 0, hi = vals.length ? Math.max(...vals) : 100;
@@ -230,7 +223,7 @@
     const defs = el('defs', {}, svg);
     for (let v = lo; v <= hi + 1e-9; v += step) {
       el('line', { x1: pad.l, x2: pad.l + plotW, y1: y(v), y2: y(v), class: Math.abs(v) < 1e-9 ? 'baseline' : 'grid' }, svg);
-      el('text', { x: pad.l - 10, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }, svg).textContent = compact(v);
+      el('text', { x: pad.l - 10, y: y(v) + 4, class: 'tick', 'text-anchor': 'end' }, svg).textContent = tickLabel(v, step, Math.max(Math.abs(lo), Math.abs(hi)));
     }
     dateMarks(dates, Math.max(2, Math.floor(plotW / 72))).forEach(([i, label]) => {
       el('text', { x: x(i), y: H - 8, class: 'tick', 'text-anchor': 'middle' }, svg).textContent = label;
@@ -382,15 +375,8 @@
       if (e.key in moves) { e.preventDefault(); show((idx < 0 ? n - 1 : idx) + moves[e.key]); }
     });
 
-    root.querySelectorAll('[data-range]').forEach((b) => b.classList.toggle('on', b.dataset.range === range));
   }
 
-  root.querySelectorAll('[data-range]').forEach((b) => b.addEventListener('click', () => {
-    range = b.dataset.range;
-    save('balanceRange', range);
-    animate = true;
-    render();
-  }));
   let t;
   window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(render, 100); });
   syncBoxes();

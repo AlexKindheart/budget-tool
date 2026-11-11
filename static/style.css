@@ -227,3 +227,4 @@ pre.notes { white-space: pre-wrap; font: inherit; font-size: .88rem; background:
 .card.saved { display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
   border-color: color-mix(in srgb, var(--pos) 45%, var(--line)); background: color-mix(in srgb, var(--pos) 8%, var(--card)); }
 .card.saved .small { word-break: break-all; }
+.chart-empty { padding: 3rem 0; text-align: center; }

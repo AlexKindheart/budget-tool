@@ -87,8 +87,17 @@ def budget_vs_actual(conn, start, end, budget_scale=1.0, months=None):
     return {"income": sections["income"], "expense": sections["expense"], "totals": totals}
 
 
-def yearly(conn, year, start_balance=0.0):
-    """Actual income/expenses per category for each month of the year (YearlyReport sheet)."""
+def yearly(conn, year, start_balance=None, today=None):
+    """Actual income/expenses per category for each month of the year (YearlyReport sheet).
+
+    Balances come from the register, so End Balance always matches your accounts: start = all
+    accounts at the end of last year; "other" = money that changed your balances without being income
+    or spending (transfers to/from accounts that aren't in the app, opening balances); end = start +
+    net + other, month by month. Months that haven't started yet have no end balance (None)."""
+    today = today or date.today()
+    if start_balance is None:
+        start_balance = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE date < ?",
+                                     (date(year, 1, 1).isoformat(),)).fetchone()[0]
     months = [date(year, m, 1) for m in range(1, 13)]
     per_month = [actuals(conn, m, add_months(m, 1) - timedelta(days=1)) for m in months]
     unc = [uncategorized(conn, m, add_months(m, 1) - timedelta(days=1)) for m in months]
@@ -105,27 +114,32 @@ def yearly(conn, year, start_balance=0.0):
     inc = [sum(r["values"][i] for r in rows["income"]) for i in range(12)]
     exp = [sum(r["values"][i] for r in rows["expense"]) for i in range(12)]
     net = [inc[i] - exp[i] for i in range(12)]
+    change = [conn.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE date BETWEEN ? AND ?",
+                           (m.isoformat(), (add_months(m, 1) - timedelta(days=1)).isoformat())).fetchone()[0]
+              for m in months]
+    other = [round(change[i] - net[i], 2) for i in range(12)]
     end, bal = [], start_balance
-    for n in net:
-        bal += n
-        end.append(bal)
+    for i, m in enumerate(months):
+        bal += change[i]
+        end.append(round(bal, 2) if m <= today else None)
     return {"months": months, "income": rows["income"], "expense": rows["expense"],
-            "inc": inc, "exp": exp, "net": net, "end": end}
+            "inc": inc, "exp": exp, "net": net, "other": other, "end": end, "start": round(start_balance, 2)}
 
 
-def daily_balances(conn, months=None, today=None):
-    """End-of-day register balance for each account, every day from the first of the month
-    `months - 1` months ago through today (months=None: from the month of the earliest transaction,
-    and at least a year back). Days before an account's first transaction are None.
+def daily_balances(conn, months=None, today=None, start=None, end=None):
+    """End-of-day register balance for each account, every day from `start` through `end`
+    (never past today, so a span still in progress stops at today and a future one is empty).
+    Without start: the first of the month `months - 1` months ago, or (months=None) the month of the
+    earliest transaction, at least a year back. Days before an account's first transaction are None.
     Credit cards and loans come out negative (money owed), so "all" is your net worth."""
-    today = today or date.today()
-    if months is None:
+    today = min(end, today or date.today()) if end else (today or date.today())
+    if start is None and months is None:
         start = add_months(date(today.year, today.month, 1), -12)
         earliest = conn.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
         if earliest:
             e = date.fromisoformat(earliest[:10])
             start = min(start, date(e.year, e.month, 1))
-    else:
+    elif start is None:
         start = add_months(date(today.year, today.month, 1), -(months - 1))
     dates = [start + timedelta(days=i) for i in range((today - start).days + 1)]
     accounts = conn.execute("SELECT id, name, kind, closed FROM accounts ORDER BY closed, sort, name").fetchall()

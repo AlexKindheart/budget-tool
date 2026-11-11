@@ -228,7 +228,8 @@ def overview():
         earliest = conn.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
         p = overview_period(request.args, date.fromisoformat(earliest[:10]) if earliest else None)
         rep = reports.budget_vs_actual(conn, p["start"], p["end"], budget_scale=p["scale"], months=p["months"])
-        trend = reports.daily_balances(conn)
+        trend = reports.daily_balances(conn, start=p["start"], end=p["end"])  # the chart follows the picker
+        trend["caption"] = {"all": "all time", "year": f"in {p['label']}", "month": f"in {p['label']}"}.get(p["period"], p["label"])
         accounts = all_accounts(conn, include_closed=False)
         balances = account_balances(conn)
         recent = conn.execute(
@@ -484,9 +485,8 @@ def reports_page():
     with db.connect() as conn:
         if view == "yearly":
             year = int(request.args.get("year") or date.today().year)
-            start_balance = float(db.get_setting(conn, f"start_balance_{year}", "0") or 0)
-            data = reports.yearly(conn, year, start_balance)
-            return render_template("reports.html", view=view, year=year, y=data, start_balance=start_balance)
+            data = reports.yearly(conn, year)  # balances come from your accounts, not the Budget screen's estimate
+            return render_template("reports.html", view=view, year=year, y=data)
         if view == "period":
             period = "weekly" if request.args.get("period") == "weekly" else "biweekly"
             days = 14 if period == "biweekly" else 7
