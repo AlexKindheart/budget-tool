@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Categories{% endblock %}
+{% block content %}
+<h1>Categories</h1>
+
+<section class="card">
+  <p class="muted small"><strong>Income</strong> and <strong>Expense</strong> categories are budgeted and reported.
+     <strong>Non-budget</strong> ones (like [Transfer] and [Beginning Balance]) move money between your own accounts
+     and are left out of the totals, just like the NON-BUDGET CATEGORIES in the spreadsheet.</p>
+  <form method="post" id="cat-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="save">
+  </form>
+  <table>
+    <thead><tr><th>Name</th><th>Type</th><th class="num">Order</th><th class="num">Used</th><th></th></tr></thead>
+    {% for kind, title in [('income', 'INCOME'), ('expense', 'EXPENSE'), ('transfer', 'NON-BUDGET')] %}
+    <tbody>
+      <tr class="section"><td colspan="5">{{ title }}</td></tr>
+      {% for c in cats if c.kind == kind %}
+        <tr>
+          <td><input form="cat-form" name="name_{{ c.id }}" value="{{ c.name }}" required></td>
+          <td><select form="cat-form" name="kind_{{ c.id }}">
+            {% for k, l in [('income', 'Income'), ('expense', 'Expense'), ('transfer', 'Non-budget')] %}<option value="{{ k }}" {{ 'selected' if c.kind == k }}>{{ l }}</option>{% endfor %}
+          </select></td>
+          <td><input form="cat-form" name="sort_{{ c.id }}" value="{{ c.sort }}" class="tiny"></td>
+          <td class="num muted">{{ counts.get(c.id, 0) }}</td>
+          <td><button class="btn ghost small" form="del-{{ c.id }}">Delete</button></td>
+        </tr>
+      {% endfor %}
+    </tbody>
+    {% endfor %}
+  </table>
+  <button class="btn primary" form="cat-form">Save categories</button>
+  {% for c in cats %}
+    <form id="del-{{ c.id }}" method="post" onsubmit='return confirm({{ ("Delete " ~ c.name ~ "? Its " ~ counts.get(c.id, 0) ~ " transactions become uncategorized and its budget is removed.")|tojson }})'>
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ c.id }}">
+    </form>
+  {% endfor %}
+</section>
+
+<section class="card">
+  <h2>Add a category</h2>
+  <form method="post" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add">
+    <input name="name" placeholder="e.g. Pet Care" required>
+    <select name="kind"><option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Non-budget</option></select>
+    <button class="btn">Add</button>
+  </form>
+</section>
+
+<section class="card">
+  <div class="bar tight">
+    <h2>Payee rules</h2>
+    <form method="post"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="reapply">
+      <button class="btn ghost small" title="Re-sort bank transactions you haven't edited by hand">Re-apply to bank transactions</button></form>
+  </div>
+  <p class="muted small">When a bank transaction's description contains the text, it gets that payee name and/or category.
+     The longest matching text wins, so "sheetz" + Dining and "sheetz gas" + Fuel can live side by side.
+     Transactions you've edited by hand are never changed.</p>
+  <table>
+    <thead><tr><th>Description contains</th><th>Payee becomes</th><th>Category</th><th></th></tr></thead>
+    <tbody>
+    {% for r in rules %}
+      <tr><td><code>{{ r.match }}</code></td><td>{{ r.payee or '' }}</td><td>{{ r.category or '-' }}</td>
+        <td><form method="post"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete_rule">
+          <input type="hidden" name="id" value="{{ r.id }}"><button class="btn ghost small">Remove</button></form></td></tr>
+    {% else %}
+      <tr><td colspan="4" class="muted">No rules yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add_rule">
+    <input name="match" placeholder="Description contains…" required>
+    <input name="payee" placeholder="Payee becomes (optional)">
+    <select name="category_id"><option value="">(keep category)</option>
+      {% for c in cats %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select>
+    <button class="btn">Add rule</button>
+  </form>
+</section>
+{% endblock %}

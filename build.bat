@@ -15,7 +15,7 @@ py -m pip install -q -r requirements.txt || goto :fail
 
 echo Building Budget Tool (takes a minute)...
 py -m PyInstaller --noconfirm --clean --windowed --name BudgetTool ^
-  --add-data "templates;templates" --add-data "static;static" ^
+  --add-data "templates;templates" --add-data "static;static" --add-data "VERSION;." ^
   budget_tool.py || goto :fail
 
 echo Installing to %INSTALL%...

@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Accounts{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="bar">
+  <h1>Accounts</h1>
+  <div class="actions">
+    {% if items %}
+    <form method="post" action="{{ url_for('sync') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button class="btn">Sync banks</button>
+    </form>{% endif %}
+    <button class="btn primary" data-connect>+ Connect a bank</button>
+  </div>
+</div>
+
+<section class="card scroll">
+  <form method="post" id="acc-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="save">
+  </form>
+  <table>
+    <thead><tr><th>Account</th><th>Type</th><th class="num">Goal</th><th class="num">%</th><th class="num">Cleared</th>
+      <th class="num">Balance</th><th class="num">Bank says</th><th class="num" title="Order on screens">Order</th><th>Closed</th><th></th></tr></thead>
+    <tbody>
+    {% for a in accounts %}{% set bal = balances.get(a.id, (0, 0)) %}{% set bank = bank_sign(a) %}
+      <tr class="{{ 'muted' if a.closed }}">
+        <td><input form="acc-form" name="name_{{ a.id }}" value="{{ a.name }}" required>
+          {% if a.plaid_account_id %}<div class="muted small">Linked to bank{% if a.mask %} ••{{ a.mask }}{% endif %}{% if a.sync_from %} · from {{ a.sync_from }}{% endif %}</div>{% endif %}</td>
+        <td><select form="acc-form" name="kind_{{ a.id }}">{% for k in kinds %}<option value="{{ k }}" {{ 'selected' if a.kind == k }}>{{ k|capitalize }}</option>{% endfor %}</select></td>
+        <td><input form="acc-form" name="goal_{{ a.id }}" class="money" value="{{ '%.2f'|format(a.goal) if a.goal is not none }}"></td>
+        <td class="num">{% if a.goal %}{{ (bal[0] / a.goal)|pct if a.goal > 0 else 'n/a' }}{% endif %}</td>
+        <td class="num">{{ bal[1]|money }}</td>
+        <td class="num strong {{ 'neg' if bal[0] < 0 }}"><a href="{{ url_for('register', account=a.id, month='all') }}">{{ bal[0]|money }}</a></td>
+        <td class="num">{% if bank is not none %}{{ bank|money }}
+          {% if (bank - bal[1])|abs > 0.005 %}
+            <div class="small neg" title="Cleared balance in the app differs from the bank">off by {{ (bank - bal[1])|money }}</div>
+            <button class="btn ghost small" form="match-{{ a.id }}">Match bank</button>
+          {% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
+        <td><input form="acc-form" name="sort_{{ a.id }}" value="{{ a.sort }}" class="tiny"></td>
+        <td><input form="acc-form" type="checkbox" name="closed_{{ a.id }}" value="1" {{ 'checked' if a.closed }}></td>
+        <td>{% if not a.plaid_account_id %}<button class="btn ghost small danger" form="del-{{ a.id }}">Delete</button>{% endif %}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="10" class="muted">No accounts yet. Connect a bank, or add one below.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if accounts %}<button class="btn primary" form="acc-form">Save accounts</button>{% endif %}
+  {% for a in accounts %}
+    <form id="del-{{ a.id }}" method="post" onsubmit='return confirm({{ ("Delete " ~ a.name ~ " and ALL its transactions? This can not be undone.")|tojson }})'>
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ a.id }}">
+    </form>
+    <form id="match-{{ a.id }}" method="post" onsubmit="return confirm('Add a [Beginning Balance] adjustment so the cleared balance equals what the bank reports?')">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="match_bank"><input type="hidden" name="id" value="{{ a.id }}">
+    </form>
+  {% endfor %}
+</section>
+
+<section class="card">
+  <h2>Add an account</h2>
+  <p class="muted small">For accounts you track by hand (cash, a bank Plaid can't reach). The opening balance is entered as
+     [Beginning Balance]: use a negative number for money you owe on a card or loan.</p>
+  <form method="post" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="add">
+    <input name="name" placeholder="Account name" required>
+    <select name="kind">{% for k in kinds %}<option value="{{ k }}">{{ k|capitalize }}</option>{% endfor %}</select>
+    <input name="opening" class="money" placeholder="Opening balance">
+    <input name="goal" class="money" placeholder="Goal (optional)">
+    <button class="btn">Add</button>
+  </form>
+</section>
+
+<h2 class="section-title">Bank connections</h2>
+{% set manual = accounts|rejectattr('plaid_account_id')|list %}
+{% for it in items %}
+  <section class="card">
+    <div class="bar tight">
+      <div><h2>{{ it.institution_name }}</h2><span class="muted small">Last synced {{ it.last_synced|ago }}</span></div>
+      <div class="actions">
+        <button class="btn {{ 'primary' if it.error else 'ghost' }}" data-reconnect="{{ it.item_id }}">Reconnect</button>
+        <form method="post" onsubmit='return confirm({{ ("Disconnect " ~ it.institution_name ~ "? Its accounts and transactions stay in the app as manual accounts, unless you ticked the box.")|tojson }})'>
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="remove_bank">
+          <input type="hidden" name="item_id" value="{{ it.item_id }}">
+          <label class="small"><input type="checkbox" name="delete_data" value="1"> also delete its transactions</label>
+          <button class="btn ghost danger">Disconnect</button>
+        </form>
+      </div>
+    </div>
+    {% if it.error %}
+      <div class="flash error">Last sync failed: {{ it.error }}
+        {% if 'ITEM_LOGIN_REQUIRED' in it.error %}<br>Your bank wants you to sign in again. Click <strong>Reconnect</strong>.{% endif %}</div>
+    {% endif %}
+    {% for a in accounts if a.item_id == it.item_id %}
+      <div class="row">
+        <div><strong>{{ a.name }}</strong>{% if a.mask %} <span class="muted">••{{ a.mask }}</span>{% endif %}</div>
+        {% if manual and not a.sync_from %}
+        <form method="post" class="inline" onsubmit="return confirm('Merge this bank account into the account you picked? Bank transactions on or before your last entry there are dropped so nothing is counted twice.')">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="link">
+          <input type="hidden" name="bank_account" value="{{ a.id }}">
+          <span class="small muted">Same as</span>
+          <select name="target">{% for m in manual %}<option value="{{ m.id }}">{{ m.name }}</option>{% endfor %}</select>
+          <button class="btn ghost small">Link</button>
+        </form>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </section>
+{% else %}
+  <section class="card empty"><p>No banks connected. Click <strong>Connect a bank</strong> to have transactions download automatically.</p></section>
+{% endfor %}
+<p class="muted small">Already tracking an account by hand and now connected its bank? Use <strong>Same as … Link</strong> so the bank's
+   transactions continue that account's register from the day after your last entry, instead of making a duplicate account.</p>
+{% endblock %}

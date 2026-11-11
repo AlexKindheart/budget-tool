@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}{{ year }} Budget{% endblock %}
+{% block main_class %}wide{% endblock %}
+{% block content %}
+<div class="bar">
+  <div class="month">
+    <a class="btn ghost" href="?year={{ year - 1 }}">&larr;</a>
+    <h1>{{ year }} Budget</h1>
+    <a class="btn ghost" href="?year={{ year + 1 }}">&rarr;</a>
+  </div>
+  <div class="actions">
+    <form method="post" onsubmit="return confirm('Copy every amount from {{ year - 1 }} into {{ year }}? Amounts already set for {{ year }} are replaced.')">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="action" value="copy_last_year">
+      <button class="btn ghost">Copy {{ year - 1 }}'s budget</button>
+    </form>
+    <button class="btn primary" form="budget-form">Save budget</button>
+  </div>
+</div>
+
+<form method="post" id="budget-form" data-budget-grid>
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="year" value="{{ year }}">
+  <input type="hidden" name="action" value="save">
+  <section class="card scroll">
+    <table class="grid12">
+      <thead><tr><th class="sticky"></th>{% for m in months %}<th class="num">{{ m|mon }}</th>{% endfor %}<th class="num">Total</th><th class="num">Average</th><th></th></tr></thead>
+      <tbody class="summary">
+        <tr><td class="sticky">Starting Balance</td>
+          <td><input name="start_balance" class="money" value="{{ '%.2f'|format(start_balance) if start_balance }}" data-start></td>
+          <td colspan="14"></td></tr>
+        <tr><td class="sticky">Total Income</td>{% for v in inc %}<td class="num" data-sum="income" data-col="{{ loop.index0 }}">{{ v|money }}</td>{% endfor %}
+          <td class="num strong" data-sum="income" data-col="total">{{ inc|sum|money }}</td><td colspan="2"></td></tr>
+        <tr><td class="sticky">Total Expenses</td>{% for v in exp %}<td class="num" data-sum="expense" data-col="{{ loop.index0 }}">{{ v|money }}</td>{% endfor %}
+          <td class="num strong" data-sum="expense" data-col="total">{{ exp|sum|money }}</td><td colspan="2"></td></tr>
+        <tr class="strong"><td class="sticky">NET (Income - Expenses)</td>{% for i in range(12) %}<td class="num" data-sum="net" data-col="{{ i }}">{{ (inc[i] - exp[i])|money }}</td>{% endfor %}
+          <td class="num" data-sum="net" data-col="total">{{ (inc|sum - exp|sum)|money }}</td><td colspan="2"></td></tr>
+        <tr><td class="sticky">Projected End Balance</td>{% for v in proj %}<td class="num" data-sum="proj" data-col="{{ loop.index0 }}">{{ v|money }}</td>{% endfor %}<td colspan="3"></td></tr>
+      </tbody>
+      {% for kind, title in [('income', 'INCOME CATEGORIES'), ('expense', 'EXPENSE CATEGORIES')] %}
+      <tbody>
+        <tr class="section"><td class="sticky" colspan="16">{{ title }}</td></tr>
+        {% for c in cats if c.kind == kind %}{% set row = grid.get(c.id, [0] * 12) %}
+          <tr data-row data-kind="{{ kind }}">
+            <td class="sticky">{{ c.name }}</td>
+            {% for v in row %}<td><input name="b_{{ c.id }}_{{ loop.index0 }}" class="money" inputmode="decimal" value="{{ '%.2f'|format(v) if v }}"></td>{% endfor %}
+            <td class="num" data-total>{{ row|sum|money }}</td>
+            <td class="num muted" data-avg>{{ (row|sum / 12)|money }}</td>
+            <td><button type="button" class="btn ghost small" data-fill title="Copy January to every month">&rarr;</button></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+      {% endfor %}
+    </table>
+  </section>
+  <p class="muted small">Non-budget categories like [Transfer] and [Beginning Balance] aren't budgeted. Change a category's
+     type on the <a href="{{ url_for('categories_page') }}">Categories</a> screen.</p>
+  <button class="btn primary">Save budget</button>
+</form>
+{% endblock %}

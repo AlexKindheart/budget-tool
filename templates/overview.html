@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% block title %}{{ label }}{% endblock %}
+{% block content %}
+{% set t = rep.totals %}
+<div class="bar">
+  <div class="month">
+    <a class="btn ghost" href="?month={{ prev }}">&larr;</a>
+    <h1>{{ label }}</h1>
+    <a class="btn ghost" href="?month={{ nxt }}">&rarr;</a>
+  </div>
+  <div class="actions">
+    {% if has_items %}<span class="muted small">Bank sync: {{ last_synced|ago }}</span>
+    <form method="post" action="{{ url_for('sync') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button class="btn">Sync now</button>
+    </form>{% endif %}
+    <a class="btn primary" href="{{ url_for('register', month=month) }}#add">+ Transaction</a>
+  </div>
+</div>
+
+{% if not accounts %}
+  <section class="card empty">
+    <h2>Welcome!</h2>
+    <p>Connect your bank or add accounts on the <a href="{{ url_for('accounts') }}">Accounts</a> screen,
+       then set your monthly amounts on the <a href="{{ url_for('budget') }}">Budget</a> screen.</p>
+  </section>
+{% endif %}
+
+<section class="card summary">
+  <table>
+    <thead><tr><th></th><th class="num">Budget</th><th class="num">Actual</th><th class="num">Difference</th></tr></thead>
+    <tbody>
+      <tr><td>Total Income</td><td class="num">{{ t.income.budget|money }}</td><td class="num">{{ t.income.actual|money }}</td>
+        <td class="num {{ 'pos' if t.income.actual >= t.income.budget else 'neg' }}">{{ (t.income.actual - t.income.budget)|money }}</td></tr>
+      <tr><td>Total Expenses</td><td class="num">{{ t.expense.budget|money }}</td><td class="num">{{ t.expense.actual|money }}</td>
+        <td class="num {{ 'pos' if t.expense.budget >= t.expense.actual else 'neg' }}">{{ (t.expense.budget - t.expense.actual)|money }}</td></tr>
+      <tr class="strong"><td>NET</td><td class="num">{{ t.net.budget|money }}</td><td class="num {{ 'pos' if t.net.actual >= 0 else 'neg' }}">{{ t.net.actual|money }}</td>
+        <td class="num {{ 'pos' if t.net.actual >= t.net.budget else 'neg' }}">{{ (t.net.actual - t.net.budget)|money }}</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="card trend" data-trend data-selected="{{ month }}" data-month-url="{{ url_for('overview') }}">
+  <div class="bar tight">
+    <div>
+      <h2>Trends</h2>
+      <div class="legend">
+        <span><i class="swatch s1"></i>Income</span>
+        <span><i class="swatch s2"></i>Expenses</span>
+      </div>
+    </div>
+    <div class="seg" role="group" aria-label="How many months">
+      <button type="button" data-range="6">6 mo</button>
+      <button type="button" data-range="12" class="on">12 mo</button>
+      <button type="button" data-range="24">24 mo</button>
+    </div>
+  </div>
+  <div class="chart" role="img" aria-label="Monthly income and expenses"></div>
+  <div class="tip" hidden></div>
+  <details class="tableview">
+    <summary class="small muted">Show as a table</summary>
+    <table>
+      <thead><tr><th>Month</th><th class="num">Income</th><th class="num">Expenses</th><th class="num">Net</th></tr></thead>
+      <tbody>{% for r in trend|reverse %}{% if loop.index <= 12 %}
+        <tr><td><a href="{{ url_for('overview', month=r.month) }}">{{ r.month }}</a></td><td class="num">{{ r.income|money }}</td>
+          <td class="num">{{ r.expense|money }}</td><td class="num {{ 'neg' if r.net < 0 }}">{{ r.net|money }}</td></tr>
+      {% endif %}{% endfor %}</tbody>
+    </table>
+  </details>
+  <script type="application/json" class="trend-data">{{ trend|tojson }}</script>
+</section>
+
+<div class="grid">
+  <section class="card">
+    <div class="bar tight"><h2>Expenses</h2><a class="small" href="{{ url_for('reports_page', month=month) }}">Full report &rarr;</a></div>
+    {% for r in rep.expense|sort(attribute='actual', reverse=true) %}
+      <a class="cat" href="{{ url_for('register', month=month, category=r.id) }}">
+        <div class="cat-head">
+          <span>{{ r.name }}</span>
+          <span>{{ r.actual|money }}{% if r.budget %} <span class="muted">of {{ r.budget|money }}</span>{% endif %}</span>
+        </div>
+        {% if r.budget %}{% set p = (r.used or 0) * 100 %}
+          <div class="meter"><div class="{{ 'over' if p > 100 else ('near' if p > 85 else '') }}" style="width: {{ [p, 100]|min }}%"></div></div>
+        {% endif %}
+      </a>
+    {% else %}<p class="muted">No spending this month.</p>{% endfor %}
+  </section>
+
+  <div>
+    <section class="card">
+      <div class="bar tight"><h2>Accounts</h2><a class="small" href="{{ url_for('accounts') }}">Manage &rarr;</a></div>
+      {% for a in accounts %}{% set bal = balances.get(a.id, (0, 0)) %}
+        <a class="row link" href="{{ url_for('register', account=a.id, month='all') }}">
+          <div><strong>{{ a.name }}</strong>
+            {% if a.goal %}<div class="muted small">Goal {{ a.goal|money }} · {{ (bal[0] / a.goal)|pct if a.goal > 0 else '-' }}</div>{% endif %}</div>
+          <div class="num {{ 'neg' if bal[0] < 0 }}">{{ bal[0]|money }}</div>
+        </a>
+      {% endfor %}
+    </section>
+
+    <section class="card">
+      <div class="bar tight"><h2>Recent</h2><a class="small" href="{{ url_for('register') }}">Register &rarr;</a></div>
+      {% for t in recent %}
+        <div class="row">
+          <div>{{ t.payee }}{% if not t.cleared %} <span class="pill">pending</span>{% endif %}
+            <div class="muted small">{{ t.date }} · {{ t.account }} · {{ t.category or 'Uncategorized' }}</div></div>
+          <div class="num {{ 'pos' if t.amount > 0 }}">{{ t.amount|money }}</div>
+        </div>
+      {% else %}<p class="muted">Nothing yet.</p>{% endfor %}
+    </section>
+  </div>
+</div>
+{% endblock %}

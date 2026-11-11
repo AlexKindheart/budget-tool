@@ -9,22 +9,30 @@
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="{{ url_for('dashboard') }}">Budget Tool</a>
+    <a class="brand" href="{{ url_for('overview') }}">Budget Tool</a>
     <nav>
       {% set ep = request.endpoint %}
-      <a href="{{ url_for('dashboard') }}" class="{{ 'on' if ep == 'dashboard' }}">Dashboard</a>
-      <a href="{{ url_for('transactions') }}" class="{{ 'on' if ep == 'transactions' }}">Transactions</a>
-      <a href="{{ url_for('budgets') }}" class="{{ 'on' if ep == 'budgets' }}">Budgets</a>
-      <a href="{{ url_for('connections') }}" class="{{ 'on' if ep == 'connections' }}">Banks</a>
+      <a href="{{ url_for('overview') }}" class="{{ 'on' if ep == 'overview' }}">Overview</a>
+      <a href="{{ url_for('register') }}" class="{{ 'on' if ep in ('register', 'register_edit') }}">Register</a>
+      <a href="{{ url_for('budget') }}" class="{{ 'on' if ep == 'budget' }}">Budget</a>
+      <a href="{{ url_for('reports_page') }}" class="{{ 'on' if ep == 'reports_page' }}">Reports</a>
+      <a href="{{ url_for('accounts') }}" class="{{ 'on' if ep == 'accounts' }}">Accounts</a>
+      <a href="{{ url_for('categories_page') }}" class="{{ 'on' if ep == 'categories_page' }}">Categories</a>
       <a href="{{ url_for('settings') }}" class="{{ 'on' if ep == 'settings' }}">Settings</a>
     </nav>
-    {% if plaid_env == 'sandbox' %}<span class="pill warn" title="Fake test data. Switch to Production on the Settings screen for real banks.">Sandbox</span>{% endif %}
+    {% if plaid_env == 'sandbox' and plaid_ready %}<span class="pill warn" title="Fake test data. Switch to Production on the Settings screen for real banks.">Sandbox</span>{% endif %}
   </header>
 
-  <main>
-    {% if not plaid_ready and request.endpoint != 'settings' %}
-      <div class="flash error">
-        Plaid isn't set up yet. Add your Plaid keys on the <a href="{{ url_for('settings') }}">Settings</a> screen.
+  <main class="{% block main_class %}{% endblock %}">
+    {% if update.available and request.endpoint != 'settings' %}
+      <div class="flash update">
+        <span>Budget Tool <strong>{{ update.latest }}</strong> is available (you have {{ update.current }}).</span>
+        <a href="{{ url_for('settings') }}#updates">What's new</a>
+        {% if update.can_install %}
+        <form method="post" action="{{ url_for('update_install') }}" onsubmit="return confirm('Install the update now? Budget Tool will close and reopen.')">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <button class="btn primary small">Update now</button>
+        </form>{% endif %}
       </div>
     {% endif %}
     {% for cat, msg in get_flashed_messages(with_categories=true) %}
@@ -35,5 +43,7 @@
   </main>
 
   <script src="{{ url_for('static', filename='link.js') }}"></script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script src="{{ url_for('static', filename='chart.js') }}"></script>
 </body>
 </html>

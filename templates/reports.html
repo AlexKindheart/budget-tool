@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block main_class %}{{ 'wide' if view == 'yearly' }}{% endblock %}
+
+{% macro bva(rep, link_start, link_month) %}
+  {% set t = rep.totals %}
+  <section class="card summary">
+    <h2>Budget summary</h2>
+    <table>
+      <thead><tr><th></th><th class="num">Budget</th><th class="num">Actual</th><th class="num">Difference</th></tr></thead>
+      <tbody>
+        <tr><td>Total Income</td><td class="num">{{ t.income.budget|money }}</td><td class="num">{{ t.income.actual|money }}</td>
+          <td class="num {{ 'pos' if t.income.actual >= t.income.budget else 'neg' }}">{{ (t.income.actual - t.income.budget)|money }}</td></tr>
+        <tr><td>Total Expenses</td><td class="num">{{ t.expense.budget|money }}</td><td class="num">{{ t.expense.actual|money }}</td>
+          <td class="num {{ 'pos' if t.expense.budget >= t.expense.actual else 'neg' }}">{{ (t.expense.budget - t.expense.actual)|money }}</td></tr>
+        <tr class="strong"><td>NET</td><td class="num">{{ t.net.budget|money }}</td><td class="num">{{ t.net.actual|money }}</td>
+          <td class="num {{ 'pos' if t.net.actual >= t.net.budget else 'neg' }}">{{ (t.net.actual - t.net.budget)|money }}</td></tr>
+      </tbody>
+    </table>
+  </section>
+  {% for kind, title in [('income', 'INCOME'), ('expense', 'EXPENSES')] %}
+  <section class="card">
+    <h2>{{ title }}</h2>
+    <table>
+      <thead><tr><th>Category</th><th class="num">Budget</th><th class="num">%</th><th class="num">Actual</th><th class="num">%</th>
+        <th class="num">Difference</th><th class="barcol"></th></tr></thead>
+      <tbody>
+      {% for r in rep[kind] %}
+        <tr>
+          <td>{% if link_month %}<a href="{{ url_for('register', month=link_month, category=r.id) }}">{{ r.name }}</a>{% else %}{{ r.name }}{% endif %}</td>
+          <td class="num">{{ r.budget|money }}</td><td class="num muted">{{ r.pct_budget|pct }}</td>
+          <td class="num">{{ r.actual|money }}</td><td class="num muted">{{ r.pct_actual|pct }}</td>
+          <td class="num {{ 'pos' if r.diff >= 0 else 'neg' }}">{{ r.diff|money }}</td>
+          <td class="barcol">{% if r.budget %}{% set p = (r.used or 0) * 100 %}
+            <div class="meter" title="{{ r.used|pct }} of budget"><div class="{{ ('over' if p > 100 else ('near' if p > 85 else '')) if kind == 'expense' }}" style="width: {{ [p, 100]|min }}%"></div></div>{% endif %}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="7" class="muted">Nothing here for this period.</td></tr>
+      {% endfor %}
+      </tbody>
+      <tfoot><tr class="strong"><td>Total</td><td class="num">{{ rep.totals[kind].budget|money }}</td><td></td>
+        <td class="num">{{ rep.totals[kind].actual|money }}</td><td></td><td></td><td></td></tr></tfoot>
+    </table>
+  </section>
+  {% endfor %}
+{% endmacro %}
+
+{% block content %}
+<div class="tabs">
+  <a href="{{ url_for('reports_page', view='monthly') }}" class="{{ 'on' if view == 'monthly' }}">Monthly / Year-to-date</a>
+  <a href="{{ url_for('reports_page', view='yearly') }}" class="{{ 'on' if view == 'yearly' }}">Yearly</a>
+  <a href="{{ url_for('reports_page', view='period') }}" class="{{ 'on' if view == 'period' }}">Weekly / Bi-weekly</a>
+</div>
+
+{% if view == 'monthly' %}
+  <div class="bar">
+    <div class="month">
+      <a class="btn ghost" href="?view=monthly&month={{ prev }}{{ '&ytd=1' if ytd }}">&larr;</a>
+      <h1>{{ label }}</h1>
+      <a class="btn ghost" href="?view=monthly&month={{ nxt }}{{ '&ytd=1' if ytd }}">&rarr;</a>
+    </div>
+    <div class="actions">
+      <a class="btn {{ 'primary' if not ytd else 'ghost' }}" href="?view=monthly&month={{ month }}">This month</a>
+      <a class="btn {{ 'primary' if ytd else 'ghost' }}" href="?view=monthly&month={{ month }}&ytd=1">Year-to-date</a>
+    </div>
+  </div>
+  {{ bva(rep, start, None if ytd else month) }}
+
+{% elif view == 'period' %}
+  <div class="bar">
+    <div class="month">
+      <a class="btn ghost" href="?view=period&period={{ period }}&start={{ prev.isoformat() }}">&larr;</a>
+      <h1>{{ start.strftime('%b %d') }} – {{ end.strftime('%b %d, %Y') }}</h1>
+      <a class="btn ghost" href="?view=period&period={{ period }}&start={{ nxt.isoformat() }}">&rarr;</a>
+    </div>
+    <form class="filters" method="get">
+      <input type="hidden" name="view" value="period">
+      <label class="small">Starts <input type="date" name="start" value="{{ start.isoformat() }}" onchange="this.form.submit()"></label>
+      <select name="period" onchange="this.form.submit()">
+        <option value="weekly" {{ 'selected' if period == 'weekly' }}>Weekly</option>
+        <option value="biweekly" {{ 'selected' if period == 'biweekly' }}>Bi-weekly</option>
+      </select>
+    </form>
+  </div>
+  <p class="muted small">Budget here is your {{ start.strftime('%B') }} monthly budget × 12 ÷ {{ 26 if period == 'biweekly' else 52 }}.
+     Set the start date to a payday and the app remembers it.</p>
+  {{ bva(rep, start, None) }}
+
+{% else %}
+  {% set y_ = y %}
+  <div class="bar">
+    <div class="month">
+      <a class="btn ghost" href="?view=yearly&year={{ year - 1 }}">&larr;</a>
+      <h1>{{ year }} Income &amp; Expenses</h1>
+      <a class="btn ghost" href="?view=yearly&year={{ year + 1 }}">&rarr;</a>
+    </div>
+    <span class="muted small">Starting balance {{ start_balance|money }} (set on the <a href="{{ url_for('budget', year=year) }}">Budget</a> screen)</span>
+  </div>
+  <section class="card scroll">
+    <table class="grid12">
+      <thead><tr><th class="sticky"></th>{% for m in y_.months %}<th class="num"><a href="{{ url_for('reports_page', view='monthly', month=m.strftime('%Y-%m')) }}">{{ m|mon }}</a></th>{% endfor %}
+        <th class="num">Total</th><th class="num">Average</th></tr></thead>
+      <tbody class="summary">
+        <tr><td class="sticky">Total Income</td>{% for v in y_.inc %}<td class="num">{{ v|money }}</td>{% endfor %}<td class="num strong">{{ y_.inc|sum|money }}</td><td class="num muted">{{ (y_.inc|sum / 12)|money }}</td></tr>
+        <tr><td class="sticky">Total Expenses</td>{% for v in y_.exp %}<td class="num">{{ v|money }}</td>{% endfor %}<td class="num strong">{{ y_.exp|sum|money }}</td><td class="num muted">{{ (y_.exp|sum / 12)|money }}</td></tr>
+        <tr class="strong"><td class="sticky">NET (Income - Expenses)</td>{% for v in y_.net %}<td class="num {{ 'neg' if v < 0 }}">{{ v|money }}</td>{% endfor %}<td class="num">{{ y_.net|sum|money }}</td><td></td></tr>
+        <tr><td class="sticky">End Balance</td>{% for v in y_.end %}<td class="num">{{ v|money }}</td>{% endfor %}<td colspan="2"></td></tr>
+      </tbody>
+      {% for kind, title in [('income', 'INCOME'), ('expense', 'EXPENSES')] %}
+      <tbody>
+        <tr class="section"><td class="sticky" colspan="15">{{ title }}</td></tr>
+        {% for r in y_[kind] %}
+          <tr><td class="sticky">{{ r.name }}</td>
+            {% for v in r['values'] %}<td class="num {{ 'muted' if not v }}">{{ v|money if v else '-' }}</td>{% endfor %}
+            <td class="num strong">{{ r.total|money }}</td><td class="num muted">{{ r.avg|money }}</td></tr>
+        {% else %}
+          <tr><td class="sticky muted" colspan="15">Nothing yet.</td></tr>
+        {% endfor %}
+      </tbody>
+      {% endfor %}
+    </table>
+  </section>
+{% endif %}
+{% endblock %}

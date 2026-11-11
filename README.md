@@ -1,61 +1,81 @@
 # Budget Tool
 
-A personal budgeting app for Windows that pulls transactions from your bank automatically
-through [Plaid](https://plaid.com). It runs in its own window, and your data stays on your computer.
+A personal budgeting app for Windows that works like a money-manager spreadsheet (account register,
+yearly budget, budget-vs-actual reports), except your bank transactions fill themselves in through
+[Plaid](https://plaid.com). It runs in its own window, and your data stays on your computer.
 
-- Connect one or more banks/credit cards
-- Transactions sync automatically (every 6 hours while the app is open, or click **Sync now**)
-- Transactions are categorized automatically. Fix any of them, and tick **always** to make a rule for that merchant
-- Set a monthly budget per category and track spent vs. budget on the dashboard
+## Screens
+
+| Screen | What it does |
+|---|---|
+| **Overview** | This month's income/expenses/net vs. budget, a 6/12/24-month income vs. expenses trend chart, spending by category, account balances, recent activity |
+| **Register** | Every transaction: Account, Date, Payee, Memo, Category, Clr, Payment, Deposit, running Balance. Add cash/manual entries, edit, filter, search |
+| **Budget** | A yearly grid: each category × 12 months, with Total, Average, and Total Income / Expenses / NET / Projected End Balance |
+| **Reports** | Monthly or year-to-date budget vs. actual, a yearly month-by-month report, and a weekly / bi-weekly report |
+| **Accounts** | Accounts with savings goals and % reached, cleared and total balances, what the bank says, and bank connections |
+| **Categories** | Income, expense and non-budget categories ([Transfer], [Beginning Balance]), plus payee rules |
+| **Settings** | Plaid keys, auto-sync interval, and app updates |
+
+How the numbers work:
+
+- **Expense** categories count as spending (refunds reduce it). **Income** categories count as money in.
+- **Non-budget** categories ([Transfer], [Beginning Balance]) are left out of every total. Use them for money moving
+  between your own accounts.
+- **Clr** works like a check register: blank = pending, **c** = cleared, **R** = reconciled. Bank transactions come in
+  as blank while pending and **c** once posted. Click the Clr button to change it.
+- Bank-linked accounts get an automatic [Beginning Balance] entry, so the register's cleared balance equals what the
+  bank reports.
+- **Payee rules** (Categories screen): when a bank description contains some text, set the payee name and/or category.
+  The longest match wins. Anything you edit by hand is never changed by a sync or a rule.
+- The weekly / bi-weekly report prorates the monthly budget (× 12 ÷ 52 or ÷ 26).
 
 ## Install
 
-1. Double-click **`build.bat`**. It builds the app, installs it to
-   `%LOCALAPPDATA%\Programs\BudgetTool`, and adds a **Budget Tool** shortcut to your Desktop and Start Menu.
-   Close Budget Tool first if it's open. Run it again whenever you change the code.
+1. Double-click **`build.bat`**. It builds the app, installs it to `%LOCALAPPDATA%\Programs\BudgetTool`, and adds a
+   **Budget Tool** shortcut to your Desktop and Start Menu. Close Budget Tool first if it's open. Run it again
+   whenever you change the code.
 2. Open Budget Tool from the shortcut.
 
 (Developers can also run it straight from source with `py budget_tool.py`.)
 
-## Connect Plaid
+## Connect your bank
 
-1. Sign up at <https://dashboard.plaid.com/signup>, then go to **Developers → Keys**.
-2. In Budget Tool, open **Settings**, paste your **client ID** and **Sandbox secret**, choose
-   **Sandbox**, and save.
-3. Click **Connect bank**. Plaid's sign-in opens in your web browser. Banks only allow their secure
-   login in a real browser. In sandbox, pick any bank and log in with `user_good` / `pass_good`.
-   When it says you're done, close the tab. The app window refreshes on its own.
+1. Sign up at <https://dashboard.plaid.com/signup> and go to **Developers → Keys**.
+2. In Budget Tool, open **Settings** and paste your client ID and secret. Choose **Sandbox** for fake test banks
+   (login `user_good` / `pass_good`) or **Production** for your real bank (Plaid must approve production access).
+3. On **Accounts**, click **Connect a bank**. Plaid's sign-in opens in your web browser, because banks only allow
+   their secure login there. When it says you're done, close the tab and the app refreshes.
 
-## Using your real bank
+Already tracking an account by hand? After connecting its bank, use **Same as … Link** on the Accounts screen. The
+bank's transactions then continue that account's register from the day after your last entry, instead of
+creating a duplicate account.
 
-Sandbox only has fake banks. To connect your real accounts:
+If a sync shows `ITEM_LOGIN_REQUIRED` (for example after changing your bank password), click **Reconnect**.
 
-1. In the Plaid Dashboard, request **Production** access (free "limited production" access is available
-   for personal projects). Plaid has to approve it, with the **Transactions** product enabled.
-2. In **Settings**, paste the **Production** secret and switch the environment to **Production**.
-3. Disconnect the sandbox test banks on the **Banks** page, then click **Connect bank**.
+## Updates
 
-Some banks (e.g. Chase, Wells Fargo) only appear in production after you complete Plaid's OAuth
-registration and security questionnaire in the Plaid Dashboard.
+Budget Tool checks this repo's GitHub releases every few hours while it's open. When there's a newer version you'll
+see a banner. Click **Update now** (or **Settings → Updates**) and it downloads the new version, checks it against
+the release's published SHA-256 checksum, closes, swaps in the new program files and reopens. Your data isn't
+touched. If copying fails, the previous version is put back. Each update is logged to
+`%APPDATA%\BudgetTool\update.log`.
 
-## How the numbers work
+### Publishing a new version
 
-- **Expense** categories count as spending. Refunds show as negative spending.
-- **Income** categories count as money in.
-- **Transfer** categories (moving money between your own accounts, credit card payments) are left
-  out of both, so a card purchase isn't counted again when you pay the card off.
-- Change a category's type on the **Budgets** page.
-
-If a sync shows `ITEM_LOGIN_REQUIRED` (for example after changing your bank password), go to
-**Banks** and click **Reconnect**.
+1. Change the number in `VERSION` (e.g. `1.1.0`), commit, and push.
+2. Double-click **`release.bat`**. It tags the commit `v1.1.0` and pushes the tag.
+3. GitHub Actions (`.github/workflows/release.yml`) builds `BudgetTool-windows.zip` plus its `.sha256` and publishes
+   the release. The build fails if `VERSION` doesn't match the tag.
 
 ## Your data
 
-Everything is stored in `%APPDATA%\BudgetTool\budget.db`, including your Plaid keys and bank access
-tokens. Keep that folder private. Rebuilding or updating the app doesn't touch it. Delete it to start fresh.
+Everything is stored in `%APPDATA%\BudgetTool\budget.db`, including your Plaid keys and bank access tokens. Keep that
+folder private. Rebuilding or updating the app doesn't touch it.
 
-The app runs a small server that only this computer can reach, and only with a key that changes each
-time the app starts.
+Upgrading from the first version keeps your bank connection and settings, saves a copy of the old database next to
+it (`budget.db.v1-backup-…`), and downloads your bank transactions again in the new register format.
+
+The app runs a small server that only this computer can reach, and only with a key that changes each time it starts.
 
 ## Files
 
@@ -63,8 +83,12 @@ time the app starts.
 |---|---|
 | `budget_tool.py` | Starts the app window |
 | `app.py` | Screens and actions |
-| `plaid_client.py` | Plaid API calls and transaction sync |
-| `db.py` | Database, default categories, Plaid → category mapping |
+| `reports.py` | Budget vs. actual, yearly, weekly, and trend numbers |
+| `updater.py` | Checks GitHub releases, verifies and installs updates |
+| `plaid_client.py` | Plaid API calls and the sync that fills the register |
+| `db.py` | Database, starter categories, Plaid → category mapping, payee rules |
 | `paths.py` | Where app files and your data live |
-| `templates/`, `static/` | Screen layouts, styles, and the Connect bank script |
-| `build.bat` | Builds the .exe and makes shortcuts |
+| `templates/`, `static/` | Screen layouts, styles, scripts |
+| `build.bat` | Builds the .exe, installs it, makes shortcuts |
+| `release.bat`, `.github/workflows/release.yml` | Publish a version as a GitHub release |
+| `VERSION` | The app's version number |

@@ -1,4 +1,4 @@
-"""Budget Tool screens and routes (Flask). Shown inside the desktop window by budget_tool.py.
+"""Budget Tool screens and actions (Flask). Shown inside the desktop window by budget_tool.py.
 
 The server only listens on 127.0.0.1 and every request needs the per-launch key
 (LAUNCH_KEY), so other programs and websites can't read your data.
@@ -15,6 +15,8 @@ from flask import (Flask, abort, flash, jsonify, redirect, render_template, requ
 
 import db
 import plaid_client as plaid
+import reports
+import updater
 from paths import DATA_DIR, RESOURCE_DIR
 
 db.init()
@@ -28,13 +30,11 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
 LAUNCH_KEY = secrets.token_urlsafe(24)
 BASE_URL = ""          # set by start_server()
 DATA_VERSION = [0]     # bumped when a bank is (re)connected, so the window knows to refresh
+WINDOW_MESSAGES = []   # messages from the browser sign-in, shown in the app window next time it loads
+ACCOUNT_KINDS = ["checking", "savings", "credit", "loan", "cash", "other"]
 
 
-def bump_data_version():
-    DATA_VERSION[0] += 1
-
-
-# ---------------------------------------------------------------- helpers
+# ---------------------------------------------------------------- request plumbing
 
 def csrf_token():
     if "csrf" not in session:
@@ -56,17 +56,29 @@ def check_access():
             abort(400, "Form expired - go back, refresh the page and try again.")
 
 
+@app.before_request
+def deliver_window_messages():
+    if request.method == "GET" and request.args.get("browser") != "1" and not request.path.startswith(("/api/", "/static/")):
+        while WINDOW_MESSAGES:
+            flash(*WINDOW_MESSAGES.pop(0))
+
+
 @app.context_processor
 def inject_globals():
     return {"csrf_token": csrf_token, "plaid_env": plaid.env(), "plaid_ready": plaid.configured(),
-            "in_browser": request.args.get("browser") == "1"}
+            "today": date.today(), "update": updater.status()}
 
 
 @app.template_filter("money")
 def money(value):
     value = value or 0
-    sign = "-" if value < 0 else ""
+    sign = "-" if value < -0.004 else ""
     return f"{sign}${abs(value):,.2f}"
+
+
+@app.template_filter("pct")
+def pct(value):
+    return "-" if value is None else f"{value * 100:.0f}%"
 
 
 @app.template_filter("ago")
@@ -83,16 +95,56 @@ def ago(iso):
     return f"{int(secs // 86400)} days ago"
 
 
-def month_param():
-    """Return (YYYY-MM, prev, next, label) for ?month=, defaulting to this month."""
-    raw = request.args.get("month", "")
+@app.template_filter("mon")
+def mon(value):
+    """'2026-01' or a date -> 'Jan'."""
+    d = value if isinstance(value, date) else datetime.strptime(value, "%Y-%m").date()
+    return d.strftime("%b")
+
+
+def parse_month(raw, default=None):
     try:
-        first = datetime.strptime(raw, "%Y-%m").date()
+        return datetime.strptime(raw or "", "%Y-%m").date()
     except ValueError:
-        first = date.today().replace(day=1)
-    prev = (first - timedelta(days=1)).replace(day=1)
-    nxt = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
-    return first.strftime("%Y-%m"), prev.strftime("%Y-%m"), nxt.strftime("%Y-%m"), first.strftime("%B %Y")
+        return default or date.today().replace(day=1)
+
+
+def parse_money(raw):
+    raw = (raw or "").replace(",", "").replace("$", "").strip()
+    if not raw:
+        return None
+    try:
+        return round(float(raw), 2)
+    except ValueError:
+        return None
+
+
+def back(default="overview"):
+    return redirect(request.form.get("next") or request.referrer or url_for(default))
+
+
+def all_categories(conn):
+    return reports.categories(conn)
+
+
+def all_accounts(conn, include_closed=True):
+    return conn.execute(
+        "SELECT * FROM accounts" + ("" if include_closed else " WHERE closed = 0") + " ORDER BY closed, sort, name"
+    ).fetchall()
+
+
+def account_balances(conn):
+    """{account_id: (balance, cleared_balance)} from the register."""
+    out = {}
+    for r in conn.execute(
+            "SELECT account_id, SUM(amount) AS bal, SUM(CASE WHEN cleared != '' THEN amount ELSE 0 END) AS clr "
+            "FROM transactions GROUP BY account_id"):
+        out[r["account_id"]] = (r["bal"] or 0, r["clr"] or 0)
+    return out
+
+
+def last_synced(conn):
+    return conn.execute("SELECT MAX(last_synced) FROM items").fetchone()[0]
 
 
 def run_sync_and_flash():
@@ -105,169 +157,435 @@ def run_sync_and_flash():
         flash(err, "error")
 
 
-# ---------------------------------------------------------------- pages
+# ---------------------------------------------------------------- overview
 
 @app.route("/")
-def dashboard():
-    month, prev, nxt, label = month_param()
+def overview():
+    first = parse_month(request.args.get("month"))
+    last = reports.add_months(first, 1) - timedelta(days=1)
     with db.connect() as conn:
-        rows = conn.execute(
-            """SELECT c.id, c.name, c.kind, c.budget, COALESCE(SUM(t.amount), 0) AS total
-               FROM categories c
-               LEFT JOIN transactions t ON t.category_id = c.id AND substr(t.date, 1, 7) = ?
-               GROUP BY c.id ORDER BY c.name""",
-            (month,),
-        ).fetchall()
-        uncategorized = conn.execute(
-            "SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE category_id IS NULL AND substr(date, 1, 7) = ?",
-            (month,),
-        ).fetchone()[0]
-        accounts = conn.execute(
-            """SELECT a.*, i.institution_name FROM accounts a JOIN items i ON i.item_id = a.item_id
-               ORDER BY i.institution_name, a.name"""
-        ).fetchall()
-        items = conn.execute("SELECT * FROM items").fetchall()
+        rep = reports.budget_vs_actual(conn, first, last)
+        trend = reports.monthly_totals(conn, first, 24)
+        accounts = all_accounts(conn, include_closed=False)
+        balances = account_balances(conn)
         recent = conn.execute(
-            """SELECT t.*, c.name AS category FROM transactions t
-               LEFT JOIN categories c ON c.id = t.category_id
-               ORDER BY t.date DESC, t.rowid DESC LIMIT 8"""
-        ).fetchall()
-
-    expenses = [r for r in rows if r["kind"] == "expense" and (r["budget"] or r["total"])]
-    expenses.sort(key=lambda r: -r["total"])
-    spent = sum(r["total"] for r in rows if r["kind"] == "expense") + uncategorized
-    income = -sum(r["total"] for r in rows if r["kind"] == "income")
-    budget_total = sum(r["budget"] for r in rows if r["kind"] == "expense")
-    last_synced = max((i["last_synced"] for i in items if i["last_synced"]), default=None)
-
+            """SELECT t.*, c.name AS category, a.name AS account FROM transactions t
+               LEFT JOIN categories c ON c.id = t.category_id JOIN accounts a ON a.id = t.account_id
+               WHERE t.is_opening = 0 ORDER BY t.date DESC, t.id DESC LIMIT 10""").fetchall()
+        synced = last_synced(conn)
+        has_items = conn.execute("SELECT 1 FROM items").fetchone() is not None
     return render_template(
-        "dashboard.html", month=month, prev=prev, nxt=nxt, label=label,
-        expenses=expenses, uncategorized=uncategorized, spent=spent, income=income,
-        budget_total=budget_total, accounts=accounts, items=items, recent=recent,
-        last_synced=last_synced,
-    )
+        "overview.html", month=reports.month_key(first), label=first.strftime("%B %Y"),
+        prev=reports.month_key(reports.add_months(first, -1)), nxt=reports.month_key(reports.add_months(first, 1)),
+        rep=rep, trend=trend, accounts=accounts, balances=balances, recent=recent, last_synced=synced,
+        has_items=has_items)
 
 
-@app.route("/transactions")
-def transactions():
-    month, prev, nxt, label = month_param()
+# ---------------------------------------------------------------- register (Transactions sheet)
+
+@app.route("/register")
+def register():
+    month_raw = request.args.get("month", reports.month_key(date.today()))
+    account = request.args.get("account", "")
     cat = request.args.get("category", "")
     q = request.args.get("q", "").strip()
-    sql = """SELECT t.*, c.name AS category, a.name AS account, a.mask
-             FROM transactions t
-             LEFT JOIN categories c ON c.id = t.category_id
-             LEFT JOIN accounts a ON a.account_id = t.account_id
-             WHERE substr(t.date, 1, 7) = ?"""
-    params = [month]
+    uncleared = request.args.get("uncleared") == "1"
+
+    where, params = ["1=1"], []
+    if month_raw != "all":
+        first = parse_month(month_raw)
+        month_raw = reports.month_key(first)
+        where.append("substr(t.date, 1, 7) = ?")
+        params.append(month_raw)
+    if account.isdigit():
+        where.append("t.account_id = ?")
+        params.append(int(account))
     if cat == "none":
-        sql += " AND t.category_id IS NULL"
+        where.append("t.category_id IS NULL")
     elif cat.isdigit():
-        sql += " AND t.category_id = ?"
+        where.append("t.category_id = ?")
         params.append(int(cat))
     if q:
-        sql += " AND (t.name LIKE ? ESCAPE '!' OR t.merchant LIKE ? ESCAPE '!')"
         like = "%" + q.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
-        params += [like, like]
-    sql += " ORDER BY t.date DESC, t.rowid DESC LIMIT 2000"
+        where.append("(t.payee LIKE ? ESCAPE '!' OR t.memo LIKE ? ESCAPE '!' OR t.bank_name LIKE ? ESCAPE '!')")
+        params += [like, like, like]
+    if uncleared:
+        where.append("t.cleared = ''")
+
     with db.connect() as conn:
-        txs = conn.execute(sql, params).fetchall()
-        categories = conn.execute("SELECT * FROM categories ORDER BY name").fetchall()
+        txs = conn.execute(
+            f"""SELECT t.*, c.name AS category, c.kind AS category_kind, a.name AS account
+                FROM transactions t JOIN accounts a ON a.id = t.account_id
+                LEFT JOIN categories c ON c.id = t.category_id
+                WHERE {' AND '.join(where)} ORDER BY t.date DESC, t.id DESC LIMIT 3000""", params).fetchall()
+        # Running balance per account, like the Account Balance column.
+        running, totals = {}, {}
+        for r in conn.execute("SELECT id, account_id, amount FROM transactions ORDER BY date, id"):
+            totals[r["account_id"]] = totals.get(r["account_id"], 0) + r["amount"]
+            running[r["id"]] = totals[r["account_id"]]
+        categories = all_categories(conn)
+        accounts = all_accounts(conn)
+    month_d = parse_month(month_raw) if month_raw != "all" else date.today().replace(day=1)
     return render_template(
-        "transactions.html", txs=txs, categories=categories, month=month, prev=prev,
-        nxt=nxt, label=label, cat=cat, q=q,
-    )
+        "register.html", txs=txs, running=running, categories=categories, accounts=accounts,
+        month=month_raw, label=("All dates" if month_raw == "all" else month_d.strftime("%B %Y")),
+        prev=reports.month_key(reports.add_months(month_d, -1)), nxt=reports.month_key(reports.add_months(month_d, 1)),
+        account=account, cat=cat, q=q, uncleared=uncleared,
+        total_in=sum(t["amount"] for t in txs if t["amount"] > 0),
+        total_out=-sum(t["amount"] for t in txs if t["amount"] < 0))
 
 
-@app.post("/transactions/<tx_id>/category")
-def set_category(tx_id):
+def _tx_from_form(conn):
+    acc = request.form.get("account_id", "")
+    d = request.form.get("date", "")
+    pay, dep = parse_money(request.form.get("payment")), parse_money(request.form.get("deposit"))
+    if not acc.isdigit() or not conn.execute("SELECT 1 FROM accounts WHERE id = ?", (int(acc),)).fetchone():
+        raise ValueError("Pick an account.")
+    try:
+        d = date.fromisoformat(d).isoformat()
+    except ValueError:
+        raise ValueError("Enter a valid date.")
+    if pay is None and dep is None:
+        raise ValueError("Enter a payment or a deposit amount.")
+    cat = request.form.get("category_id", "")
+    cleared = request.form.get("cleared", "")
+    return {
+        "account_id": int(acc), "date": d, "payee": request.form.get("payee", "").strip(),
+        "memo": request.form.get("memo", "").strip(), "amount": round((dep or 0) - (pay or 0), 2),
+        "category_id": int(cat) if cat.isdigit() else None,
+        "cleared": cleared if cleared in ("", "c", "R") else "",
+    }
+
+
+@app.post("/register/add")
+def register_add():
+    with db.connect() as conn:
+        try:
+            t = _tx_from_form(conn)
+        except ValueError as e:
+            flash(str(e), "error")
+            return back("register")
+        conn.execute(
+            """INSERT INTO transactions (account_id, date, payee, memo, amount, category_id, cleared,
+                                         category_locked, payee_locked) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)""",
+            (t["account_id"], t["date"], t["payee"], t["memo"], t["amount"], t["category_id"], t["cleared"]))
+        plaid.refresh_opening_balance(conn, t["account_id"])
+    flash("Transaction added.", "ok")
+    return back("register")
+
+
+@app.route("/register/<int:tx_id>", methods=["GET", "POST"])
+def register_edit(tx_id):
+    with db.connect() as conn:
+        tx = conn.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+        if not tx:
+            abort(404)
+        if request.method == "POST":
+            try:
+                t = _tx_from_form(conn)
+            except ValueError as e:
+                flash(str(e), "error")
+                return redirect(url_for("register_edit", tx_id=tx_id, next=request.form.get("next")))
+            if tx["plaid_id"]:  # the bank owns date/amount/account; you own payee/memo/category/cleared
+                t.update(account_id=tx["account_id"], date=tx["date"], amount=tx["amount"])
+            conn.execute(
+                """UPDATE transactions SET account_id=?, date=?, payee=?, memo=?, amount=?, category_id=?,
+                   cleared=?, category_locked=1, payee_locked=1 WHERE id=?""",
+                (t["account_id"], t["date"], t["payee"], t["memo"], t["amount"], t["category_id"], t["cleared"], tx_id))
+            match = request.form.get("rule_match", "").strip().lower()
+            if request.form.get("make_rule") and match:
+                conn.execute(
+                    "INSERT INTO rules (match, payee, category_id) VALUES (?, ?, ?) "
+                    "ON CONFLICT(match) DO UPDATE SET payee = excluded.payee, category_id = excluded.category_id",
+                    (match, t["payee"] or None, t["category_id"]))
+                n = db.reapply_rules(conn)
+                flash(f"Saved, and made a rule for \"{match}\" ({n} other bank transactions updated).", "ok")
+            else:
+                flash("Saved.", "ok")
+            for acc_id in {tx["account_id"], t["account_id"]}:
+                plaid.refresh_opening_balance(conn, acc_id)
+            return redirect(request.form.get("next") or url_for("register"))
+        categories = all_categories(conn)
+        accounts = all_accounts(conn)
+    return render_template("tx_edit.html", tx=tx, categories=categories, accounts=accounts,
+                           next=request.args.get("next") or url_for("register"))
+
+
+@app.post("/register/<int:tx_id>/delete")
+def register_delete(tx_id):
+    with db.connect() as conn:
+        tx = conn.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+        if tx and tx["plaid_id"]:
+            flash("Bank transactions can't be deleted (the next sync would bring them back). "
+                  "Give it the [Transfer] category to leave it out of your budget.", "error")
+        elif tx:
+            conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            plaid.refresh_opening_balance(conn, tx["account_id"])
+            flash("Transaction deleted.", "ok")
+    return redirect(request.form.get("next") or url_for("register"))
+
+
+@app.post("/register/<int:tx_id>/category")
+def register_category(tx_id):
     cat_raw = request.form.get("category_id", "")
     category_id = int(cat_raw) if cat_raw.isdigit() else None
     with db.connect() as conn:
-        tx = conn.execute("SELECT * FROM transactions WHERE transaction_id = ?", (tx_id,)).fetchone()
+        tx = conn.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
         if not tx:
             abort(404)
-        conn.execute(
-            "UPDATE transactions SET category_id = ?, category_locked = 1 WHERE transaction_id = ?",
-            (category_id, tx_id),
-        )
+        conn.execute("UPDATE transactions SET category_id = ?, category_locked = 1 WHERE id = ?", (category_id, tx_id))
         if request.form.get("apply_rule") and category_id:
-            key = (tx["merchant"] or tx["name"] or "").strip().lower()
-            if key:
+            match = (tx["payee"] or tx["bank_name"] or "").strip().lower()
+            if match:
                 conn.execute(
                     "INSERT INTO rules (match, category_id) VALUES (?, ?) "
-                    "ON CONFLICT(match) DO UPDATE SET category_id = excluded.category_id",
-                    (key, category_id),
-                )
+                    "ON CONFLICT(match) DO UPDATE SET category_id = excluded.category_id", (match, category_id))
+                n = db.reapply_rules(conn)
+                flash(f"Rule saved: \"{match}\" is always this category ({n} other bank transactions updated).", "ok")
+    return back("register")
+
+
+@app.post("/register/<int:tx_id>/cleared")
+def register_cleared(tx_id):
+    """Cycle the Clr column: blank -> c -> R -> blank."""
+    with db.connect() as conn:
+        tx = conn.execute("SELECT cleared FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+        if tx:
+            nxt = {"": "c", "c": "R", "R": ""}.get(tx["cleared"], "")
+            conn.execute("UPDATE transactions SET cleared = ? WHERE id = ?", (nxt, tx_id))
+    return back("register")
+
+
+# ---------------------------------------------------------------- budget (Budget sheet)
+
+@app.route("/budget", methods=["GET", "POST"])
+def budget():
+    year = int(request.values.get("year") or date.today().year)
+    with db.connect() as conn:
+        if request.method == "POST":
+            action = request.form.get("action", "save")
+            months = [f"{year:04d}-{m:02d}" for m in range(1, 13)]
+            if action == "save":
+                for c in conn.execute("SELECT id FROM categories WHERE kind != 'transfer'").fetchall():
+                    for i, month in enumerate(months):
+                        amt = parse_money(request.form.get(f"b_{c['id']}_{i}"))
+                        if amt:
+                            conn.execute(
+                                "INSERT INTO budgets (category_id, month, amount) VALUES (?, ?, ?) "
+                                "ON CONFLICT(category_id, month) DO UPDATE SET amount = excluded.amount",
+                                (c["id"], month, amt))
+                        else:
+                            conn.execute("DELETE FROM budgets WHERE category_id = ? AND month = ?", (c["id"], month))
+                db.set_setting(conn, f"start_balance_{year}", str(parse_money(request.form.get("start_balance")) or 0))
+                flash(f"{year} budget saved.", "ok")
+            elif action == "copy_last_year":
                 n = conn.execute(
-                    """UPDATE transactions SET category_id = ?
-                       WHERE category_locked = 0
-                         AND lower(trim(COALESCE(NULLIF(merchant, ''), name, ''))) = ?""",
-                    (category_id, key),
-                ).rowcount
-                flash(f"Rule saved: \"{key}\" is always this category ({n} other transactions updated).", "ok")
-    return redirect(request.form.get("next") or url_for("transactions"))
+                    """INSERT OR REPLACE INTO budgets (category_id, month, amount)
+                       SELECT category_id, ? || substr(month, 5), amount FROM budgets WHERE month LIKE ?""",
+                    (str(year), f"{year - 1:04d}-%")).rowcount
+                flash(f"Copied {n} amounts from {year - 1}." if n else f"There's no {year - 1} budget to copy.",
+                      "ok" if n else "error")
+            return redirect(url_for("budget", year=year))
+
+        months, grid = reports.budget_grid(conn, year)
+        cats = [c for c in all_categories(conn) if c["kind"] != "transfer"]
+        start_balance = float(db.get_setting(conn, f"start_balance_{year}", "0") or 0)
+    inc = [sum(grid.get(c["id"], [0] * 12)[i] for c in cats if c["kind"] == "income") for i in range(12)]
+    exp = [sum(grid.get(c["id"], [0] * 12)[i] for c in cats if c["kind"] == "expense") for i in range(12)]
+    proj, bal = [], start_balance
+    for i in range(12):
+        bal += inc[i] - exp[i]
+        proj.append(bal)
+    return render_template("budget.html", year=year, months=months, grid=grid, cats=cats,
+                           inc=inc, exp=exp, proj=proj, start_balance=start_balance)
 
 
-@app.route("/budgets", methods=["GET", "POST"])
-def budgets():
-    if request.method == "POST":
-        action = request.form.get("action")
-        with db.connect() as conn:
+# ---------------------------------------------------------------- reports
+
+@app.route("/reports")
+def reports_page():
+    view = request.args.get("view", "monthly")
+    with db.connect() as conn:
+        if view == "yearly":
+            year = int(request.args.get("year") or date.today().year)
+            start_balance = float(db.get_setting(conn, f"start_balance_{year}", "0") or 0)
+            data = reports.yearly(conn, year, start_balance)
+            return render_template("reports.html", view=view, year=year, y=data, start_balance=start_balance)
+        if view == "period":
+            period = "weekly" if request.args.get("period") == "weekly" else "biweekly"
+            days = 14 if period == "biweekly" else 7
+            try:
+                start = date.fromisoformat(request.args.get("start", ""))
+                db.set_setting(conn, "period_anchor", start.isoformat())
+            except ValueError:
+                saved = db.get_setting(conn, "period_anchor")
+                start = date.fromisoformat(saved) if saved else date.today() - timedelta(days=(date.today().weekday() + 1) % 7)
+                while start + timedelta(days=days) <= date.today():  # jump to the period containing today
+                    start += timedelta(days=days)
+            end = start + timedelta(days=days - 1)
+            scale = 12 / (26 if period == "biweekly" else 52)
+            rep = reports.budget_vs_actual(conn, start, end, budget_scale=scale, months=[reports.month_key(start)])
+            return render_template("reports.html", view=view, rep=rep, period=period, start=start, end=end,
+                                   prev=start - timedelta(days=days), nxt=start + timedelta(days=days))
+        # monthly / year-to-date (Report sheet)
+        first = parse_month(request.args.get("month"))
+        ytd = request.args.get("ytd") == "1"
+        start = date(first.year, 1, 1) if ytd else first
+        end = reports.add_months(first, 1) - timedelta(days=1)
+        rep = reports.budget_vs_actual(conn, start, end)
+    return render_template("reports.html", view="monthly", rep=rep, ytd=ytd, month=reports.month_key(first),
+                           label=(f"January - {first.strftime('%B %Y')}" if ytd else first.strftime("%B %Y")),
+                           prev=reports.month_key(reports.add_months(first, -1)),
+                           nxt=reports.month_key(reports.add_months(first, 1)), start=start, end=end)
+
+
+# ---------------------------------------------------------------- accounts (Accounts sheet)
+
+@app.route("/accounts", methods=["GET", "POST"])
+def accounts():
+    with db.connect() as conn:
+        if request.method == "POST":
+            action = request.form.get("action")
+            if action == "add":
+                name = request.form.get("name", "").strip()
+                if not name:
+                    flash("Give the account a name.", "error")
+                elif conn.execute("SELECT 1 FROM accounts WHERE lower(name) = lower(?)", (name,)).fetchone():
+                    flash(f"There's already an account called \"{name}\".", "error")
+                else:
+                    kind = request.form.get("kind", "checking")
+                    acc_id = conn.execute(
+                        "INSERT INTO accounts (name, kind, goal, auto_opening) VALUES (?, ?, ?, 0)",
+                        (name, kind if kind in ACCOUNT_KINDS else "other", parse_money(request.form.get("goal")))).lastrowid
+                    opening = parse_money(request.form.get("opening"))
+                    if opening:
+                        conn.execute(
+                            """INSERT INTO transactions (account_id, date, payee, amount, cleared, category_id,
+                                                         category_locked, payee_locked) VALUES (?, ?, ?, ?, 'R', ?, 1, 1)""",
+                            (acc_id, date.today().isoformat(), db.BEGINNING, opening,
+                             db.ensure_category(conn, db.BEGINNING, "transfer")))
+                    flash(f"Added \"{name}\".", "ok")
+            elif action == "save":
+                for a in conn.execute("SELECT id FROM accounts").fetchall():
+                    i = a["id"]
+                    name = request.form.get(f"name_{i}", "").strip()
+                    kind = request.form.get(f"kind_{i}", "checking")
+                    if not name:
+                        continue
+                    try:
+                        conn.execute("UPDATE accounts SET name=?, kind=?, goal=?, sort=?, closed=? WHERE id=?",
+                                     (name, kind if kind in ACCOUNT_KINDS else "other",
+                                      parse_money(request.form.get(f"goal_{i}")),
+                                      int(parse_money(request.form.get(f"sort_{i}")) or 0),
+                                      1 if request.form.get(f"closed_{i}") else 0, i))
+                    except Exception:
+                        flash(f"There's already an account called \"{name}\".", "error")
+                    plaid.refresh_opening_balance(conn, i)
+                flash("Accounts saved.", "ok")
+            elif action == "delete":
+                acc = conn.execute("SELECT * FROM accounts WHERE id = ?", (int(request.form.get("id", 0)),)).fetchone()
+                if acc and acc["plaid_account_id"]:
+                    flash("That account comes from your bank. Disconnect the bank below instead.", "error")
+                elif acc:
+                    conn.execute("DELETE FROM accounts WHERE id = ?", (acc["id"],))
+                    flash(f"Deleted \"{acc['name']}\" and its transactions.", "ok")
+            elif action == "link":
+                try:
+                    sync_from = plaid.link_to_existing(int(request.form.get("bank_account", 0)),
+                                                       int(request.form.get("target", 0)))
+                    flash("Linked. Bank transactions now go into that account"
+                          + (f" from {sync_from} on." if sync_from else "."), "ok")
+                except ValueError as e:
+                    flash(str(e), "error")
+            elif action == "match_bank":
+                acc = conn.execute("SELECT * FROM accounts WHERE id = ?", (int(request.form.get("id", 0)),)).fetchone()
+                target = plaid.bank_balance_in_register_sign(acc) if acc else None
+                if target is not None:
+                    clr = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? "
+                                       "AND cleared != ''", (acc["id"],)).fetchone()[0]
+                    diff = round(target - clr, 2)
+                    if diff:
+                        conn.execute(
+                            """INSERT INTO transactions (account_id, date, payee, amount, cleared, category_id,
+                                                         category_locked, payee_locked) VALUES (?, ?, ?, ?, 'R', ?, 1, 1)""",
+                            (acc["id"], date.today().isoformat(), "Balance adjustment", diff,
+                             db.ensure_category(conn, db.BEGINNING, "transfer")))
+                        flash(f"Added a {money(diff)} adjustment so the cleared balance matches the bank.", "ok")
+            elif action == "remove_bank":
+                plaid.remove_item(request.form.get("item_id", ""), request.form.get("delete_data") == "1")
+                flash("Bank disconnected.", "ok")
+            return redirect(url_for("accounts"))
+
+        accts = all_accounts(conn)
+        balances = account_balances(conn)
+        items = conn.execute("SELECT * FROM items ORDER BY institution_name").fetchall()
+    return render_template("accounts.html", accounts=accts, balances=balances, items=items, kinds=ACCOUNT_KINDS,
+                           bank_sign=plaid.bank_balance_in_register_sign)
+
+
+@app.post("/sync")
+def sync():
+    run_sync_and_flash()
+    return back()
+
+
+# ---------------------------------------------------------------- categories & rules
+
+@app.route("/categories", methods=["GET", "POST"])
+def categories_page():
+    with db.connect() as conn:
+        if request.method == "POST":
+            action = request.form.get("action")
             if action == "save":
                 for c in conn.execute("SELECT id FROM categories").fetchall():
-                    cid = c["id"]
-                    name = request.form.get(f"name_{cid}", "").strip()
-                    kind = request.form.get(f"kind_{cid}", "expense")
-                    try:
-                        budget = max(0.0, float(request.form.get(f"budget_{cid}", "0") or 0))
-                    except ValueError:
-                        budget = 0.0
-                    if kind not in ("expense", "income", "transfer"):
-                        kind = "expense"
+                    i = c["id"]
+                    name = request.form.get(f"name_{i}", "").strip()
+                    kind = request.form.get(f"kind_{i}", "expense")
                     if name:
                         try:
-                            conn.execute("UPDATE categories SET name=?, kind=?, budget=? WHERE id=?",
-                                         (name, kind, budget, cid))
+                            conn.execute("UPDATE categories SET name=?, kind=?, sort=? WHERE id=?",
+                                         (name, kind if kind in ("income", "expense", "transfer") else "expense",
+                                          int(parse_money(request.form.get(f"sort_{i}")) or 0), i))
                         except Exception:
                             flash(f"There's already a category called \"{name}\".", "error")
-                flash("Budgets saved.", "ok")
+                flash("Categories saved.", "ok")
             elif action == "add":
                 name = request.form.get("name", "").strip()
+                kind = request.form.get("kind", "expense")
                 if name:
                     try:
-                        conn.execute("INSERT INTO categories (name, kind) VALUES (?, ?)",
-                                     (name, request.form.get("kind", "expense")))
+                        conn.execute("INSERT INTO categories (name, kind, sort) VALUES (?, ?, 500)", (name, kind))
                         flash(f"Added \"{name}\".", "ok")
                     except Exception:
                         flash(f"There's already a category called \"{name}\".", "error")
             elif action == "delete":
                 conn.execute("DELETE FROM categories WHERE id = ?", (int(request.form.get("id", 0)),))
                 flash("Category deleted. Its transactions are now uncategorized.", "ok")
+            elif action == "add_rule":
+                match = request.form.get("match", "").strip().lower()
+                cat = request.form.get("category_id", "")
+                if match:
+                    conn.execute(
+                        "INSERT INTO rules (match, payee, category_id) VALUES (?, ?, ?) "
+                        "ON CONFLICT(match) DO UPDATE SET payee = excluded.payee, category_id = excluded.category_id",
+                        (match, request.form.get("payee", "").strip() or None, int(cat) if cat.isdigit() else None))
+                    flash(f"Rule saved ({db.reapply_rules(conn)} bank transactions updated).", "ok")
             elif action == "delete_rule":
                 conn.execute("DELETE FROM rules WHERE id = ?", (int(request.form.get("id", 0)),))
                 flash("Rule removed.", "ok")
-        return redirect(url_for("budgets"))
-
-    with db.connect() as conn:
-        categories = conn.execute(
-            "SELECT * FROM categories ORDER BY CASE kind WHEN 'income' THEN 0 WHEN 'expense' THEN 1 ELSE 2 END, name"
-        ).fetchall()
+            elif action == "reapply":
+                flash(f"{db.reapply_rules(conn)} bank transactions re-sorted.", "ok")
+            return redirect(url_for("categories_page"))
+        cats = all_categories(conn)
+        counts = {r["category_id"]: r["n"] for r in conn.execute(
+            "SELECT category_id, COUNT(*) AS n FROM transactions GROUP BY category_id")}
         rules = conn.execute(
-            "SELECT r.*, c.name AS category FROM rules r JOIN categories c ON c.id = r.category_id ORDER BY r.match"
+            "SELECT r.*, c.name AS category FROM rules r LEFT JOIN categories c ON c.id = r.category_id ORDER BY r.match"
         ).fetchall()
-    return render_template("budgets.html", categories=categories, rules=rules)
+    return render_template("categories.html", cats=cats, counts=counts, rules=rules)
 
 
-@app.route("/connections")
-def connections():
-    with db.connect() as conn:
-        items = conn.execute("SELECT * FROM items ORDER BY institution_name").fetchall()
-        accounts = conn.execute("SELECT * FROM accounts ORDER BY name").fetchall()
-    by_item = {}
-    for a in accounts:
-        by_item.setdefault(a["item_id"], []).append(a)
-    return render_template("connections.html", items=items, by_item=by_item)
-
+# ---------------------------------------------------------------- settings
 
 @app.route("/settings", methods=["GET", "POST"])
 def settings():
@@ -288,22 +606,42 @@ def settings():
     )
 
 
-@app.post("/sync")
-def sync():
-    run_sync_and_flash()
-    return redirect(request.form.get("next") or url_for("dashboard"))
+# ---------------------------------------------------------------- updates
+
+@app.post("/update/check")
+def update_check():
+    st = updater.check(force=True)
+    if st["error"]:
+        flash(st["error"], "error")
+    elif st["available"]:
+        flash(f"Version {st['latest']} is available.", "ok")
+    elif st["latest"]:
+        flash(f"You're up to date (version {st['current']}).", "ok")
+    else:
+        flash("No releases have been published yet.", "ok")
+    return back("settings")
 
 
-@app.post("/connections/<item_id>/remove")
-def remove_connection(item_id):
-    plaid.remove_item(item_id)
-    flash("Bank disconnected and its transactions deleted.", "ok")
-    return redirect(url_for("connections"))
+@app.post("/update/install")
+def update_install():
+    try:
+        new_dir, work = updater.prepare()
+        updater.launch_swap(new_dir, work)
+    except Exception as e:
+        flash(f"Update failed: {e}", "error")
+        return back("settings")
+    # Quit so the helper can replace the program files; it reopens the app when it's done.
+    threading.Timer(1.5, lambda: os._exit(0)).start()
+    return render_template("updating.html", version=updater.status()["latest"])
 
 
 # ---------------------------------------------------------------- Plaid Link
 # Plaid Link (the bank sign-in screen) runs in your normal web browser, where bank security
 # redirects work reliably. The app window opens it and waits for DATA_VERSION to change.
+
+def bump_data_version():
+    DATA_VERSION[0] += 1
+
 
 @app.post("/api/open-link")
 def api_open_link():
@@ -343,16 +681,6 @@ def api_link_token():
         return jsonify(error=str(e)), 502
 
 
-WINDOW_MESSAGES = []  # messages from the browser sign-in, shown in the app window next time it loads
-
-
-@app.before_request
-def deliver_window_messages():
-    if request.method == "GET" and request.args.get("browser") != "1" and not request.path.startswith(("/api/", "/static/")):
-        while WINDOW_MESSAGES:
-            flash(*WINDOW_MESSAGES.pop(0))
-
-
 @app.post("/api/exchange")
 def api_exchange():
     body = request.get_json(silent=True) or {}
@@ -362,7 +690,8 @@ def api_exchange():
     except Exception as e:
         return jsonify(error=str(e)), 502
     msg = (f"Bank connected. Pulled {result['added']} transactions"
-           + (" (more may appear in a few minutes - click Sync now)." if result["added"] == 0 else "."))
+           + (" (more may appear in a few minutes - click Sync now)." if result["added"] == 0 else ".")
+           + " If an account is one you already track, link it on the Accounts page.")
     WINDOW_MESSAGES.append((msg, "ok"))
     bump_data_version()
     return jsonify(ok=True, message=msg)
@@ -384,6 +713,10 @@ def api_reconnected():
 
 def auto_sync_loop():
     while True:
+        try:
+            updater.check()  # at most every 6 hours; shows a banner when there's a new version
+        except Exception as e:
+            print(f"[update-check] failed: {e}")
         if plaid.configured():
             try:
                 totals, errors = plaid.sync_all()
