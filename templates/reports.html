@@ -82,7 +82,8 @@
       </select>
     </form>
   </div>
-  <p class="muted small">Budget here is your {{ start.strftime('%B') }} monthly budget × 12 ÷ {{ 26 if period == 'biweekly' else 52 }}.
+  <p class="muted small">Budget here is each month's budget spread evenly over its days: these {{ (end - start).days + 1 }} days get their share
+     (a week that crosses into a new month uses part of each month's budget).
      Set the start date to a payday and the app remembers it.</p>
   {{ bva(rep, start, None) }}
 
@@ -97,12 +98,12 @@
     <span class="muted small">All accounts on Dec 31, {{ year - 1 }}: <strong class="{{ 'neg' if y_.start < 0 }}">{{ y_.start|money }}</strong></span>
   </div>
   <section class="card scroll">
-    <table class="grid12">
+    <table class="grid12 yearly">
       <thead><tr><th class="sticky"></th>{% for m in y_.months %}<th class="num"><a href="{{ url_for('reports_page', view='monthly', month=m.strftime('%Y-%m')) }}">{{ m|mon }}</a></th>{% endfor %}
-        <th class="num">Total</th><th class="num">Average</th></tr></thead>
+        <th class="num">Total</th><th class="num" title="Per month, over the months that have started">Average{% if y_.span and y_.span < 12 %} <span class="muted small">({{ y_.span }} mo)</span>{% endif %}</th></tr></thead>
       <tbody class="summary">
-        <tr><td class="sticky">Total Income</td>{% for v in y_.inc %}<td class="num">{{ v|money }}</td>{% endfor %}<td class="num strong">{{ y_.inc|sum|money }}</td><td class="num muted">{{ (y_.inc|sum / 12)|money }}</td></tr>
-        <tr><td class="sticky">Total Expenses</td>{% for v in y_.exp %}<td class="num">{{ v|money }}</td>{% endfor %}<td class="num strong">{{ y_.exp|sum|money }}</td><td class="num muted">{{ (y_.exp|sum / 12)|money }}</td></tr>
+        <tr><td class="sticky">Total Income</td>{% for v in y_.inc %}<td class="num">{{ v|money }}</td>{% endfor %}<td class="num strong">{{ y_.inc|sum|money }}</td><td class="num muted">{{ (y_.inc|sum / y_.span if y_.span else 0)|money }}</td></tr>
+        <tr><td class="sticky">Total Expenses</td>{% for v in y_.exp %}<td class="num">{{ v|money }}</td>{% endfor %}<td class="num strong">{{ y_.exp|sum|money }}</td><td class="num muted">{{ (y_.exp|sum / y_.span if y_.span else 0)|money }}</td></tr>
         <tr class="strong"><td class="sticky">NET (Income - Expenses)</td>{% for v in y_.net %}<td class="num {{ 'neg' if v < 0 }}">{{ v|money }}</td>{% endfor %}<td class="num">{{ y_.net|sum|money }}</td><td></td></tr>
         <tr><td class="sticky" title="Money that changed your balances without being income or spending: transfers to or from accounts that aren't in Budget Tool, and opening balances. Transfers between two of your own accounts cancel out.">Transfers &amp; other <span class="muted small">(?)</span></td>
           {% for v in y_.other %}<td class="num muted">{{ v|money if v else '-' }}</td>{% endfor %}<td class="num">{{ y_.other|sum|money }}</td><td></td></tr>

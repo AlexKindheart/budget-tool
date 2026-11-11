@@ -24,29 +24,30 @@
   <input type="hidden" name="year" value="{{ year }}">
   <input type="hidden" name="action" value="save">
   <section class="card scroll">
-    <table class="grid12">
+    <table class="grid12 fit">
+      <colgroup><col class="label">{% for m in months %}<col>{% endfor %}<col class="tot"><col class="avg"><col class="fill"></colgroup>
       <thead><tr><th class="sticky"></th>{% for m in months %}<th class="num">{{ m|mon }}</th>{% endfor %}<th class="num">Total</th><th class="num">Average</th><th></th></tr></thead>
       <tbody class="summary">
         <tr><td class="sticky">Starting Balance</td>
-          <td><input name="start_balance" class="money" value="{{ '%.2f'|format(start_balance) if start_balance }}" data-start></td>
+          <td><input name="start_balance" class="money" value="{{ start_balance|amt }}" data-start></td>
           <td colspan="14"></td></tr>
-        <tr><td class="sticky">Total Income</td>{% for v in inc %}<td class="num" data-sum="income" data-col="{{ loop.index0 }}">{{ v|money }}</td>{% endfor %}
-          <td class="num strong" data-sum="income" data-col="total">{{ inc|sum|money }}</td><td colspan="2"></td></tr>
-        <tr><td class="sticky">Total Expenses</td>{% for v in exp %}<td class="num" data-sum="expense" data-col="{{ loop.index0 }}">{{ v|money }}</td>{% endfor %}
-          <td class="num strong" data-sum="expense" data-col="total">{{ exp|sum|money }}</td><td colspan="2"></td></tr>
-        <tr class="strong"><td class="sticky">NET (Income - Expenses)</td>{% for i in range(12) %}<td class="num" data-sum="net" data-col="{{ i }}">{{ (inc[i] - exp[i])|money }}</td>{% endfor %}
-          <td class="num" data-sum="net" data-col="total">{{ (inc|sum - exp|sum)|money }}</td><td colspan="2"></td></tr>
-        <tr><td class="sticky">Projected End Balance</td>{% for v in proj %}<td class="num" data-sum="proj" data-col="{{ loop.index0 }}">{{ v|money }}</td>{% endfor %}<td colspan="3"></td></tr>
+        <tr><td class="sticky">Total Income</td>{% for v in inc %}<td class="num" data-sum="income" data-col="{{ loop.index0 }}">{{ v|money_short }}</td>{% endfor %}
+          <td class="num strong" data-sum="income" data-col="total">{{ inc|sum|money_short }}</td><td colspan="2"></td></tr>
+        <tr><td class="sticky">Total Expenses</td>{% for v in exp %}<td class="num" data-sum="expense" data-col="{{ loop.index0 }}">{{ v|money_short }}</td>{% endfor %}
+          <td class="num strong" data-sum="expense" data-col="total">{{ exp|sum|money_short }}</td><td colspan="2"></td></tr>
+        <tr class="strong"><td class="sticky">NET (Income - Expenses)</td>{% for i in range(12) %}<td class="num" data-sum="net" data-col="{{ i }}">{{ (inc[i] - exp[i])|money_short }}</td>{% endfor %}
+          <td class="num" data-sum="net" data-col="total">{{ (inc|sum - exp|sum)|money_short }}</td><td colspan="2"></td></tr>
+        <tr><td class="sticky">Projected End Balance</td>{% for v in proj %}<td class="num" data-sum="proj" data-col="{{ loop.index0 }}">{{ v|money_short }}</td>{% endfor %}<td colspan="3"></td></tr>
       </tbody>
       {% for kind, title in [('income', 'INCOME CATEGORIES'), ('expense', 'EXPENSE CATEGORIES')] %}
       <tbody>
         <tr class="section"><td class="sticky" colspan="16">{{ title }}</td></tr>
         {% for c in cats if c.kind == kind %}{% set row = grid.get(c.id, [0] * 12) %}
           <tr data-row data-kind="{{ kind }}">
-            <td class="sticky">{{ c.name }}</td>
-            {% for v in row %}<td><input name="b_{{ c.id }}_{{ loop.index0 }}" class="money" inputmode="decimal" value="{{ '%.2f'|format(v) if v }}"></td>{% endfor %}
-            <td class="num" data-total>{{ row|sum|money }}</td>
-            <td class="num muted" data-avg>{{ (row|sum / 12)|money }}</td>
+            <td class="sticky" title="{{ c.name }}">{{ c.name }}</td>
+            {% for v in row %}<td><input name="b_{{ c.id }}_{{ loop.index0 }}" class="money" inputmode="decimal" value="{{ v|amt }}"></td>{% endfor %}
+            <td class="num" data-total>{{ row|sum|money_short }}</td>
+            <td class="num muted" data-avg>{{ (row|sum / 12)|money_short }}</td>
             <td><button type="button" class="btn ghost small" data-fill title="Copy January to every month">&rarr;</button></td>
           </tr>
         {% endfor %}

@@ -8,20 +8,21 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <header class="top">
-    <a class="brand" href="{{ url_for('overview') }}">Budget Tool</a>
-    <nav>
-      {% set ep = request.endpoint %}
-      <a href="{{ url_for('overview') }}" class="{{ 'on' if ep == 'overview' }}">Overview</a>
-      <a href="{{ url_for('register') }}" class="{{ 'on' if ep in ('register', 'register_edit') }}">Register</a>
-      <a href="{{ url_for('budget') }}" class="{{ 'on' if ep == 'budget' }}">Budget</a>
-      <a href="{{ url_for('reports_page') }}" class="{{ 'on' if ep == 'reports_page' }}">Reports</a>
-      <a href="{{ url_for('export_page') }}" class="{{ 'on' if ep == 'export_page' }}">Export</a>
-      <a href="{{ url_for('accounts') }}" class="{{ 'on' if ep == 'accounts' }}">Accounts</a>
-      <a href="{{ url_for('categories_page') }}" class="{{ 'on' if ep == 'categories_page' }}">Categories</a>
-      <a href="{{ url_for('settings') }}" class="{{ 'on' if ep == 'settings' }}">Settings</a>
-    </nav>
-    {% if plaid_env == 'sandbox' and plaid_ready %}<span class="pill warn" title="Fake test data. Switch to Production on the Settings screen for real banks.">Sandbox</span>{% endif %}
+  <header class="site-header">
+    <div class="wrap">
+      <a class="logo" href="{{ url_for('overview') }}">Budget <span>Tool</span></a>
+      <nav class="site-nav" aria-label="Main">
+        {% set ep = request.endpoint %}
+        {% for endpoint, eps, name in [
+          ('overview', ['overview'], 'Overview'), ('register', ['register', 'register_edit'], 'Register'),
+          ('budget', ['budget'], 'Budget'), ('reports_page', ['reports_page'], 'Reports'),
+          ('export_page', ['export_page'], 'Export'), ('accounts', ['accounts'], 'Accounts'),
+          ('categories_page', ['categories_page'], 'Categories'), ('settings', ['settings'], 'Settings')] %}
+          <a href="{{ url_for(endpoint) }}"{% if ep in eps %} class="on" aria-current="page"{% endif %}>{{ name }}</a>
+        {% endfor %}
+      </nav>
+      {% if plaid_env == 'sandbox' and plaid_ready %}<span class="pill warn" title="Fake test data. Switch to Production on the Settings screen for real banks.">Sandbox</span>{% endif %}
+    </div>
   </header>
 
   <main class="{% block main_class %}{% endblock %}">

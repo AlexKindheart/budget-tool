@@ -2,6 +2,7 @@
 {% block title %}Register{% endblock %}
 {% block main_class %}wide{% endblock %}
 {% block content %}
+{% from '_categories.html' import category_options %}
 {% set qs = '&account=' ~ account ~ '&category=' ~ cat ~ '&q=' ~ (q|urlencode) ~ ('&uncleared=1' if uncleared else '') %}
 <div class="bar">
   <div class="month">
@@ -25,7 +26,7 @@
       <option value="none" {{ 'selected' if cat == 'none' }}>Uncategorized</option>
       {% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if cat == c.id|string }}>{{ c.name }}</option>{% endfor %}
     </select>
-    <label class="small"><input type="checkbox" name="uncleared" value="1" {{ 'checked' if uncleared }} onchange="this.form.submit()"> Uncleared only</label>
+    <label class="small"><input type="checkbox" name="uncleared" value="1" {{ 'checked' if uncleared }} onchange="this.form.submit()"> Pending only</label>
     <input type="search" name="q" value="{{ q }}" placeholder="Search payee / memo">
     <button class="btn">Filter</button>
   </form>
@@ -33,7 +34,7 @@
 
 <details class="card" id="add" {{ 'open' if not txs }}>
   <summary><strong>+ Add a transaction</strong> <span class="muted small">(cash, checks, or accounts not linked to a bank)</span></summary>
-  <form method="post" action="{{ url_for('register_add') }}" class="addform">
+  <form method="post" action="{{ url_for('register_add') }}" class="addform" data-catfilter>
     <input type="hidden" name="csrf" value="{{ csrf_token() }}">
     <input type="hidden" name="next" value="{{ request.full_path }}">
     <label>Account<select name="account_id" required>
@@ -42,11 +43,7 @@
     <label>Date<input type="date" name="date" value="{{ today.isoformat() }}" required></label>
     <label>Payee<input name="payee" list="payees" autocomplete="off"></label>
     <label>Memo<input name="memo"></label>
-    <label>Category<select name="category_id">
-      <option value="">Uncategorized</option>
-      {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
-    </select></label>
-    <label>Clr<select name="cleared"><option value="">-</option><option value="c">c</option><option value="R">R</option></select></label>
+    <label>Category<select name="category_id">{{ category_options(categories, '', None) }}</select></label>
     <label>Payment<input name="payment" inputmode="decimal" class="money" placeholder="0.00"></label>
     <label>Deposit<input name="deposit" inputmode="decimal" class="money" placeholder="0.00"></label>
     <button class="btn primary">Add</button>
@@ -57,36 +54,26 @@
 <section class="card">
   <div class="bar tight">
     <span class="muted small">{{ txs|length }} transactions · in {{ total_in|money }} · out {{ total_out|money }}</span>
-    <span class="muted small">Click <strong>Clr</strong> to cycle blank → c (cleared) → R (reconciled). Tick <em>always</em> before picking a category to make a rule.</span>
   </div>
   <div class="scroll">
   <table class="tx">
-    <thead><tr><th>Account</th><th>Date</th><th>Payee</th><th>Category</th><th>Clr</th>
+    <thead><tr><th>Account</th><th>Date</th><th>Payee</th><th>Category</th>
       <th class="num">Payment</th><th class="num">Deposit</th><th class="num">Balance</th><th></th></tr></thead>
     <tbody>
     {% for t in txs %}
-      <tr class="{{ 'uncleared' if not t.cleared }}">
+      <tr class="{{ 'uncleared' if t.plaid_id and not t.cleared }}">
         <td class="small nowrap">{{ t.account }}</td>
         <td class="nowrap">{{ t.date }}</td>
-        <td>{{ t.payee }}{% if t.plaid_id %} <span class="pill" title="From your bank">bank</span>{% endif %}
+        <td>{{ t.payee }}{% if t.plaid_id %} <span class="pill" title="From your bank">bank</span>{% endif %}{% if t.plaid_id and not t.cleared %} <span class="pill warn" title="Your bank hasn't finished processing this yet">pending</span>{% endif %}
           {% if t.memo %}<div class="muted small">{{ t.memo }}</div>{% endif %}
           {% if t.bank_name and t.bank_name != t.payee %}<div class="muted small" title="As your bank describes it">{{ t.bank_name }}</div>{% endif %}</td>
         <td>
           <form method="post" action="{{ url_for('register_category', tx_id=t.id) }}" class="catform">
             <input type="hidden" name="csrf" value="{{ csrf_token() }}">
             <input type="hidden" name="next" value="{{ request.full_path }}">
-            <select name="category_id" onchange="this.form.submit()" class="{{ 'missing' if not t.category_id }}">
-              <option value="">Uncategorized</option>
-              {% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if c.id == t.category_id }}>{{ c.name }}</option>{% endfor %}
+            <select name="category_id" data-autosave class="{{ 'missing' if not t.category_id }}">
+              {{ category_options(categories, 'income' if t.amount > 0 else ('expense' if t.amount < 0 else ''), t.category_id) }}
             </select>
-            {% if not t.is_opening %}<label class="small" title="Use this category for every transaction from this payee"><input type="checkbox" name="apply_rule" value="1"> always</label>{% endif %}
-          </form>
-        </td>
-        <td>
-          <form method="post" action="{{ url_for('register_cleared', tx_id=t.id) }}">
-            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-            <input type="hidden" name="next" value="{{ request.full_path }}">
-            <button class="clr" title="{{ {'': 'Not cleared (pending)', 'c': 'Cleared', 'R': 'Reconciled'}[t.cleared] }}">{{ t.cleared or '·' }}</button>
           </form>
         </td>
         <td class="num">{% if t.amount < 0 %}{{ (-t.amount)|money }}{% endif %}</td>

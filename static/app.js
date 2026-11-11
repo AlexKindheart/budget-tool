@@ -3,7 +3,10 @@
   const form = document.querySelector('[data-budget-grid]');
   if (!form) return;
 
-  const money = (v) => (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const money = (v) => {  // whole dollars without ".00", like the page itself
+    const r = Math.round(v * 100) / 100, d = Number.isInteger(r) ? 0 : 2;
+    return (r < 0 ? '-' : '') + '$' + Math.abs(r).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+  };
   const num = (input) => parseFloat((input.value || '').replace(/[$,]/g, '')) || 0;
 
   function recalc() {
@@ -73,4 +76,66 @@
     refresh();
   }));
   form.addEventListener('change', refresh);
+})();
+
+// Add / edit a transaction: only offer categories that fit. A deposit gets income categories, a payment
+// expense categories, and non-budget ones ([Transfer]...) fit both. The server checks the same rule.
+document.querySelectorAll('[data-catfilter]').forEach((form) => {
+  const sel = form.querySelector('select[name="category_id"]');
+  const pay = form.querySelector('input[name="payment"]');
+  const dep = form.querySelector('input[name="deposit"]');
+  if (!sel || !pay || !dep) return;
+  const num = (i) => parseFloat((i.value || '').replace(/[$,]/g, '')) || 0;
+  const sideOf = () => { const a = num(dep) - num(pay); return a > 0 ? 'income' : a < 0 ? 'expense' : ''; };
+  const original = sel.value, originalSide = sideOf();  // an older transaction keeps the category it already has
+  function apply() {
+    const side = sideOf();
+    sel.querySelectorAll('optgroup').forEach((g) => {
+      let any = false;
+      g.querySelectorAll('option').forEach((o) => {
+        const show = !side || g.dataset.kind === side || g.dataset.kind === 'transfer'
+          || (o.value === original && side === originalSide);
+        o.hidden = !show; o.disabled = !show;
+        any = any || show;
+      });
+      g.hidden = !any; g.disabled = !any;
+    });
+    if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) sel.value = '';  // no longer fits
+  }
+  [pay, dep].forEach((i) => i.addEventListener('input', apply));
+  apply();
+});
+
+// Register: changing a category saves in place (no reload, so the page doesn't jump to the top).
+// If it can't be saved, the dropdown goes back and a message pops up where you are.
+(function () {
+  function toast(msg, kind) {
+    const t = document.createElement('div');
+    t.className = 'toast ' + (kind || 'ok');
+    t.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(() => t.classList.add('gone'), kind === 'error' ? 6000 : 3500);
+    setTimeout(() => t.remove(), kind === 'error' ? 6600 : 4100);
+  }
+  document.querySelectorAll('select[data-autosave]').forEach((sel) => {
+    let last = sel.value;
+    sel.addEventListener('change', () => {
+      const form = sel.form;
+      const body = new FormData(form);
+      sel.classList.add('saving');
+      fetch(form.action, { method: 'POST', body, headers: { 'X-Requested-With': 'fetch' } })
+        .then((r) => r.json().catch(() => ({})).then((d) => {
+          if (!r.ok || !d.ok) throw new Error(d.error || "Couldn't save that category. Refresh the page and try again.");
+        }))
+        .then(() => {
+          last = sel.value;
+          sel.classList.toggle('missing', !sel.value);
+          sel.classList.add('saved');
+          setTimeout(() => sel.classList.remove('saved'), 1200);
+        })
+        .catch((e) => { sel.value = last; toast(e.message, 'error'); })
+        .finally(() => sel.classList.remove('saving'));
+    });
+  });
 })();

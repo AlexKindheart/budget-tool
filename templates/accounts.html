@@ -20,7 +20,7 @@
     <input type="hidden" name="action" value="save">
   </form>
   <table>
-    <thead><tr><th>Account</th><th>Type</th><th class="num">Goal</th><th class="num">%</th><th class="num">Cleared</th>
+    <thead><tr><th>Account</th><th>Type</th><th class="num">Goal</th><th class="num">%</th><th class="num" title="Bank-connected accounts: the balance without charges your bank still shows as pending">Posted</th>
       <th class="num">Balance</th><th class="num">Bank says</th><th class="num" title="Order on screens">Order</th><th>Closed</th><th></th></tr></thead>
     <tbody>
     {% for a in accounts %}{% set bal = balances.get(a.id, (0, 0)) %}{% set bank = bank_sign(a) %}
@@ -30,11 +30,11 @@
         <td><select form="acc-form" name="kind_{{ a.id }}">{% for k in kinds %}<option value="{{ k }}" {{ 'selected' if a.kind == k }}>{{ k|capitalize }}</option>{% endfor %}</select></td>
         <td><input form="acc-form" name="goal_{{ a.id }}" class="money" value="{{ '%.2f'|format(a.goal) if a.goal is not none }}"></td>
         <td class="num">{% if a.goal %}{{ (bal[0] / a.goal)|pct if a.goal > 0 else 'n/a' }}{% endif %}</td>
-        <td class="num">{{ bal[1]|money }}</td>
+        <td class="num">{% if a.plaid_account_id %}{{ bal[1]|money }}{% else %}<span class="muted">-</span>{% endif %}</td>
         <td class="num strong {{ 'neg' if bal[0] < 0 }}"><a href="{{ url_for('register', account=a.id, month='all') }}">{{ bal[0]|money }}</a></td>
         <td class="num">{% if bank is not none %}{{ bank|money }}
           {% if (bank - bal[1])|abs > 0.005 %}
-            <div class="small neg" title="Cleared balance in the app differs from the bank">off by {{ (bank - bal[1])|money }}</div>
+            <div class="small neg" title="The posted balance in the app differs from the bank">off by {{ (bank - bal[1])|money }}</div>
             <button class="btn ghost small" form="match-{{ a.id }}">Match bank</button>
           {% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
         <td><input form="acc-form" name="sort_{{ a.id }}" value="{{ a.sort }}" class="tiny"></td>
@@ -51,7 +51,7 @@
     <form id="del-{{ a.id }}" method="post" onsubmit='return confirm({{ ("Delete " ~ a.name ~ " and ALL its transactions? This can not be undone.")|tojson }})'>
       <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ a.id }}">
     </form>
-    <form id="match-{{ a.id }}" method="post" onsubmit="return confirm('Add a [Beginning Balance] adjustment so the cleared balance equals what the bank reports?')">
+    <form id="match-{{ a.id }}" method="post" onsubmit="return confirm('Add a [Beginning Balance] adjustment so the posted balance equals what the bank reports?')">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="match_bank"><input type="hidden" name="id" value="{{ a.id }}">
     </form>
   {% endfor %}

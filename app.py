@@ -80,6 +80,23 @@ def money(value):
     return f"{sign}${abs(value):,.2f}"
 
 
+@app.template_filter("money_short")
+def money_short(value):
+    """Like money, but without ".00" on whole-dollar amounts (keeps the Budget grid narrow)."""
+    value = round(value or 0, 2)
+    sign = "-" if value < 0 else ""
+    return f"{sign}${abs(value):,.0f}" if value == int(value) else f"{sign}${abs(value):,.2f}"
+
+
+@app.template_filter("amt")
+def amt(value):
+    """An amount for an input box: blank for zero, "1500" for whole dollars, "12.50" otherwise."""
+    if not value:
+        return ""
+    value = round(value, 2)
+    return str(int(value)) if value == int(value) else f"{value:.2f}"
+
+
 @app.template_filter("pct")
 def pct(value):
     return "-" if value is None else f"{value * 100:.0f}%"
@@ -129,6 +146,22 @@ def back(default="overview"):
 
 def all_categories(conn):
     return reports.categories(conn)
+
+
+def check_category(conn, category_id, amount, current=None):
+    """Deposits take income categories, payments take expense categories; non-budget categories
+    ([Transfer], [Beginning Balance]...) and Uncategorized fit either. A category the transaction
+    already has is left alone, so editing the memo of an older transaction still works."""
+    if category_id is None or not amount or category_id == current:
+        return
+    row = conn.execute("SELECT name, kind FROM categories WHERE id = ?", (category_id,)).fetchone()
+    if not row:
+        raise ValueError("That category doesn't exist anymore.")
+    want = "income" if amount > 0 else "expense"
+    if row["kind"] not in (want, "transfer"):
+        raise ValueError(f"\"{row['name']}\" is an {row['kind']} category, but this is a "
+                         f"{'deposit' if amount > 0 else 'payment'}. Pick an {want} category "
+                         "or a non-budget one like [Transfer].")
 
 
 def all_accounts(conn, include_closed=True):
@@ -183,7 +216,7 @@ def overview_period(args, earliest):
     today = date.today()
     earliest = earliest or today
     kind = args.get("period", "month")
-    p = {"period": kind, "scale": 1.0, "months": None, "prev": None, "next": None, "choices": [], "selected": ""}
+    p = {"period": kind, "prev": None, "next": None, "choices": [], "selected": ""}
     if kind == "all":
         p.update(start=min(earliest, today), end=today, label="All Time")
     elif kind == "year":
@@ -202,7 +235,6 @@ def overview_period(args, earliest):
             s = week_start(today)
         prev_w, next_w = s - timedelta(days=7), s + timedelta(days=7)
         p.update(start=s, end=s + timedelta(days=6), label=week_label(s), selected=s.isoformat(),
-                 scale=12 / 52, months=[reports.month_key(s)],
                  prev=url_for("overview", period="week", week=prev_w.isoformat()),
                  next=url_for("overview", period="week", week=next_w.isoformat()))
         w, stop = max(week_start(today), s), min(week_start(earliest), s)
@@ -227,7 +259,7 @@ def overview():
     with db.connect() as conn:
         earliest = conn.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
         p = overview_period(request.args, date.fromisoformat(earliest[:10]) if earliest else None)
-        rep = reports.budget_vs_actual(conn, p["start"], p["end"], budget_scale=p["scale"], months=p["months"])
+        rep = reports.budget_vs_actual(conn, p["start"], p["end"])
         trend = reports.daily_balances(conn, start=p["start"], end=p["end"])  # the chart follows the picker
         trend["caption"] = {"all": "all time", "year": f"in {p['label']}", "month": f"in {p['label']}"}.get(p["period"], p["label"])
         accounts = all_accounts(conn, include_closed=False)
@@ -282,8 +314,8 @@ def register():
         like = "%" + q.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
         where.append("(t.payee LIKE ? ESCAPE '!' OR t.memo LIKE ? ESCAPE '!' OR t.bank_name LIKE ? ESCAPE '!')")
         params += [like, like, like]
-    if uncleared:
-        where.append("t.cleared = ''")
+    if uncleared:  # "Pending only": bank charges that haven't posted yet
+        where.append("t.cleared = '' AND t.plaid_id IS NOT NULL")
 
     with db.connect() as conn:
         txs = conn.execute(
@@ -325,12 +357,11 @@ def _tx_from_form(conn):
     if pay is None and dep is None:
         raise ValueError("Enter a payment or a deposit amount.")
     cat = request.form.get("category_id", "")
-    cleared = request.form.get("cleared", "")
     return {
         "account_id": int(acc), "date": d, "payee": request.form.get("payee", "").strip(),
         "memo": request.form.get("memo", "").strip(), "amount": round((dep or 0) - (pay or 0), 2),
         "category_id": int(cat) if cat.isdigit() else None,
-        "cleared": cleared if cleared in ("", "c", "R") else "",
+        "cleared": "",  # pending/posted is tracked for bank transactions only; there's no Clr column anymore
     }
 
 
@@ -339,6 +370,7 @@ def register_add():
     with db.connect() as conn:
         try:
             t = _tx_from_form(conn)
+            check_category(conn, t["category_id"], t["amount"])
         except ValueError as e:
             flash(str(e), "error")
             return back("register")
@@ -360,25 +392,19 @@ def register_edit(tx_id):
         if request.method == "POST":
             try:
                 t = _tx_from_form(conn)
+                t["cleared"] = tx["cleared"]  # keep pending / posted as it was
+                if tx["plaid_id"]:  # the bank owns date/amount/account; you own payee/memo/category
+                    t.update(account_id=tx["account_id"], date=tx["date"], amount=tx["amount"])
+                same_side = (t["amount"] > 0) == (tx["amount"] > 0)
+                check_category(conn, t["category_id"], t["amount"], tx["category_id"] if same_side else None)
             except ValueError as e:
                 flash(str(e), "error")
                 return redirect(url_for("register_edit", tx_id=tx_id, next=request.form.get("next")))
-            if tx["plaid_id"]:  # the bank owns date/amount/account; you own payee/memo/category/cleared
-                t.update(account_id=tx["account_id"], date=tx["date"], amount=tx["amount"])
             conn.execute(
                 """UPDATE transactions SET account_id=?, date=?, payee=?, memo=?, amount=?, category_id=?,
                    cleared=?, category_locked=1, payee_locked=1 WHERE id=?""",
                 (t["account_id"], t["date"], t["payee"], t["memo"], t["amount"], t["category_id"], t["cleared"], tx_id))
-            match = request.form.get("rule_match", "").strip().lower()
-            if request.form.get("make_rule") and match:
-                conn.execute(
-                    "INSERT INTO rules (match, payee, category_id) VALUES (?, ?, ?) "
-                    "ON CONFLICT(match) DO UPDATE SET payee = excluded.payee, category_id = excluded.category_id",
-                    (match, t["payee"] or None, t["category_id"]))
-                n = db.reapply_rules(conn)
-                flash(f"Saved, and made a rule for \"{match}\" ({n} other bank transactions updated).", "ok")
-            else:
-                flash("Saved.", "ok")
+            flash("Saved.", "ok")
             for acc_id in {tx["account_id"], t["account_id"]}:
                 plaid.refresh_opening_balance(conn, acc_id)
             return redirect(request.form.get("next") or url_for("register"))
@@ -410,26 +436,17 @@ def register_category(tx_id):
         tx = conn.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
         if not tx:
             abort(404)
+        quiet = request.headers.get("X-Requested-With") == "fetch"  # changed in place on the Register, no reload
+        try:
+            check_category(conn, category_id, tx["amount"], tx["category_id"])
+        except ValueError as e:
+            if quiet:
+                return jsonify(error=str(e)), 400
+            flash(str(e), "error")
+            return back("register")
         conn.execute("UPDATE transactions SET category_id = ?, category_locked = 1 WHERE id = ?", (category_id, tx_id))
-        if request.form.get("apply_rule") and category_id:
-            match = (tx["payee"] or tx["bank_name"] or "").strip().lower()
-            if match:
-                conn.execute(
-                    "INSERT INTO rules (match, category_id) VALUES (?, ?) "
-                    "ON CONFLICT(match) DO UPDATE SET category_id = excluded.category_id", (match, category_id))
-                n = db.reapply_rules(conn)
-                flash(f"Rule saved: \"{match}\" is always this category ({n} other bank transactions updated).", "ok")
-    return back("register")
-
-
-@app.post("/register/<int:tx_id>/cleared")
-def register_cleared(tx_id):
-    """Cycle the Clr column: blank -> c -> R -> blank."""
-    with db.connect() as conn:
-        tx = conn.execute("SELECT cleared FROM transactions WHERE id = ?", (tx_id,)).fetchone()
-        if tx:
-            nxt = {"": "c", "c": "R", "R": ""}.get(tx["cleared"], "")
-            conn.execute("UPDATE transactions SET cleared = ? WHERE id = ?", (nxt, tx_id))
+        if quiet:
+            return jsonify(ok=True)
     return back("register")
 
 
@@ -499,8 +516,7 @@ def reports_page():
                 while start + timedelta(days=days) <= date.today():  # jump to the period containing today
                     start += timedelta(days=days)
             end = start + timedelta(days=days - 1)
-            scale = 12 / (26 if period == "biweekly" else 52)
-            rep = reports.budget_vs_actual(conn, start, end, budget_scale=scale, months=[reports.month_key(start)])
+            rep = reports.budget_vs_actual(conn, start, end)
             return render_template("reports.html", view=view, rep=rep, period=period, start=start, end=end,
                                    prev=start - timedelta(days=days), nxt=start + timedelta(days=days))
         # monthly / year-to-date (Report sheet)
@@ -586,7 +602,7 @@ def accounts():
                                                          category_locked, payee_locked) VALUES (?, ?, ?, ?, 'R', ?, 1, 1)""",
                             (acc["id"], date.today().isoformat(), "Balance adjustment", diff,
                              db.ensure_category(conn, db.BEGINNING, "transfer")))
-                        flash(f"Added a {money(diff)} adjustment so the cleared balance matches the bank.", "ok")
+                        flash(f"Added a {money(diff)} adjustment so the posted balance matches the bank.", "ok")
             elif action == "remove_bank":
                 plaid.remove_item(request.form.get("item_id", ""), request.form.get("delete_data") == "1")
                 flash("Bank disconnected.", "ok")
@@ -605,7 +621,7 @@ def sync():
     return back()
 
 
-# ---------------------------------------------------------------- categories & rules
+# ---------------------------------------------------------------- categories
 
 @app.route("/categories", methods=["GET", "POST"])
 def categories_page():
@@ -637,28 +653,11 @@ def categories_page():
             elif action == "delete":
                 conn.execute("DELETE FROM categories WHERE id = ?", (int(request.form.get("id", 0)),))
                 flash("Category deleted. Its transactions are now uncategorized.", "ok")
-            elif action == "add_rule":
-                match = request.form.get("match", "").strip().lower()
-                cat = request.form.get("category_id", "")
-                if match:
-                    conn.execute(
-                        "INSERT INTO rules (match, payee, category_id) VALUES (?, ?, ?) "
-                        "ON CONFLICT(match) DO UPDATE SET payee = excluded.payee, category_id = excluded.category_id",
-                        (match, request.form.get("payee", "").strip() or None, int(cat) if cat.isdigit() else None))
-                    flash(f"Rule saved ({db.reapply_rules(conn)} bank transactions updated).", "ok")
-            elif action == "delete_rule":
-                conn.execute("DELETE FROM rules WHERE id = ?", (int(request.form.get("id", 0)),))
-                flash("Rule removed.", "ok")
-            elif action == "reapply":
-                flash(f"{db.reapply_rules(conn)} bank transactions re-sorted.", "ok")
             return redirect(url_for("categories_page"))
         cats = all_categories(conn)
         counts = {r["category_id"]: r["n"] for r in conn.execute(
             "SELECT category_id, COUNT(*) AS n FROM transactions GROUP BY category_id")}
-        rules = conn.execute(
-            "SELECT r.*, c.name AS category FROM rules r LEFT JOIN categories c ON c.id = r.category_id ORDER BY r.match"
-        ).fetchall()
-    return render_template("categories.html", cats=cats, counts=counts, rules=rules)
+    return render_template("categories.html", cats=cats, counts=counts)
 
 
 # ---------------------------------------------------------------- settings

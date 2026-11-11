@@ -54,19 +54,6 @@ def preview(conn, start, end, ids):
     return {"count": r["n"], "money_in": round(r["i"], 2), "money_out": round(r["o"], 2)}
 
 
-def _budgets(conn, start, end):
-    """{category_id: budget} for the range; a month only partly in the range counts for its share of days."""
-    out, m = {}, date(start.year, start.month, 1)
-    while m <= end:
-        nxt = reports.add_months(m, 1)
-        last = nxt - timedelta(days=1)
-        share = ((min(end, last) - max(start, m)).days + 1) / ((last - m).days + 1)
-        for cid, amount in reports.budgets(conn, [reports.month_key(m)]).items():
-            out[cid] = out.get(cid, 0) + amount * share
-        m = nxt
-    return out
-
-
 def _sums(conn, start, end, ids, by_month=False):
     """Raw register sums per category (None = uncategorized), optionally per 'YYYY-MM'."""
     where, params = _in_accounts(ids)
@@ -104,7 +91,7 @@ def _summary(wb, conn, start, end, ids, account_label, cats):
     _intro(ws, "Budget vs. actual", start, end, account_label,
            "Budgets for part of a month are prorated by day. Transfers and opening balances aren't counted."
            + (" Budgets cover all your accounts." if account_label != "All accounts" else ""))
-    bud, act = _budgets(conn, start, end), _sums(conn, start, end, ids)
+    bud, act = reports.prorated_budgets(conn, start, end), _sums(conn, start, end, ids)
     row = 5
     _header(ws, row, ["Category", "Budget", "Actual", "Difference"])
     totals = {}
@@ -151,19 +138,18 @@ def _transactions(wb, conn, start, end, ids, account_label):
     ws = wb.create_sheet("Transactions")
     where, params = _in_accounts(ids)
     rows = conn.execute(
-        f"""SELECT t.date, a.name AS account, t.payee, c.name AS category, t.memo, t.bank_name, t.amount, t.cleared
+        f"""SELECT t.date, a.name AS account, t.payee, c.name AS category, t.memo, t.bank_name, t.amount
             FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN categories c ON c.id = t.category_id
             WHERE {where} AND t.date BETWEEN ? AND ? ORDER BY t.date, t.id""",
         params + [start.isoformat(), end.isoformat()]).fetchall()
-    _header(ws, 1, ["Date", "Account", "Payee", "Category", "Memo", "Bank description", "Payment", "Deposit", "Amount", "Clr"])
+    _header(ws, 1, ["Date", "Account", "Payee", "Category", "Memo", "Bank description", "Payment", "Deposit", "Amount"])
     for r in rows:
         amt = r["amount"]
         ws.append([date.fromisoformat(r["date"][:10]), r["account"], r["payee"] or "", r["category"] or "Uncategorized",
-                   r["memo"] or "", r["bank_name"] or "", -amt if amt < 0 else None, amt if amt > 0 else None, amt,
-                   r["cleared"] or ""])
+                   r["memo"] or "", r["bank_name"] or "", -amt if amt < 0 else None, amt if amt > 0 else None, amt])
     if rows:
         last = len(rows) + 1
-        table = Table(displayName="TransactionList", ref=f"A1:J{last}")
+        table = Table(displayName="TransactionList", ref=f"A1:I{last}")
         table.tableStyleInfo = TableStyleInfo(name="TableStyleLight9", showRowStripes=True)
         ws.add_table(table)
         for (cell,) in ws.iter_rows(min_row=2, max_row=last, min_col=1, max_col=1):
@@ -174,7 +160,7 @@ def _transactions(wb, conn, start, end, ids, account_label):
     else:
         ws["A2"] = "No transactions in this date range."
         ws["A2"].font = MUTED
-    _widths(ws, [12, 20, 28, 22, 24, 34, 13, 13, 13, 5])
+    _widths(ws, [12, 20, 28, 22, 24, 34, 13, 13, 13])
     ws.freeze_panes = "A2"
 
 

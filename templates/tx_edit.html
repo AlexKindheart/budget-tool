@@ -1,13 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Edit transaction{% endblock %}
 {% block content %}
+{% from '_categories.html' import category_options %}
 <h1>Edit transaction</h1>
 <section class="card">
   {% if tx.plaid_id %}
     <p class="muted small">This came from your bank, so the account, date and amount stay as the bank reports them.
        Your payee, memo and category are kept even when the bank updates it.</p>
   {% endif %}
-  <form method="post">
+  <form method="post" data-catfilter>
     <input type="hidden" name="csrf" value="{{ csrf_token() }}">
     <input type="hidden" name="next" value="{{ next }}">
     {% set ro = 'disabled' if tx.plaid_id else '' %}
@@ -18,21 +19,9 @@
     <div class="form-row"><label>Payee</label><input name="payee" value="{{ tx.payee or '' }}"></div>
     {% if tx.bank_name %}<div class="form-row"><label>Bank description</label><span class="muted">{{ tx.bank_name }}</span></div>{% endif %}
     <div class="form-row"><label>Memo</label><input name="memo" value="{{ tx.memo or '' }}"></div>
-    <div class="form-row"><label>Category</label><select name="category_id">
-      <option value="">Uncategorized</option>
-      {% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if c.id == tx.category_id }}>{{ c.name }}</option>{% endfor %}
-    </select></div>
-    <div class="form-row"><label>Clr</label><select name="cleared">
-      {% for v, l in [('', '- (not cleared)'), ('c', 'c (cleared)'), ('R', 'R (reconciled)')] %}<option value="{{ v }}" {{ 'selected' if tx.cleared == v }}>{{ l }}</option>{% endfor %}
-    </select></div>
+    <div class="form-row"><label>Category</label><select name="category_id">{{ category_options(categories, '', tx.category_id) }}</select></div>
     <div class="form-row"><label>Payment</label><input name="payment" class="money" value="{{ '%.2f'|format(-tx.amount) if tx.amount < 0 }}" {{ 'readonly' if ro }}></div>
     <div class="form-row"><label>Deposit</label><input name="deposit" class="money" value="{{ '%.2f'|format(tx.amount) if tx.amount > 0 }}" {{ 'readonly' if ro }}></div>
-    {% if tx.plaid_id %}
-    <div class="form-row"><label>Make a rule</label>
-      <div><label class="small"><input type="checkbox" name="make_rule" value="1"> Whenever the bank description contains</label>
-        <input name="rule_match" value="{{ (tx.bank_name or tx.payee or '')|lower }}">
-        <div class="muted small">use this payee name and category. Shorten it (e.g. just "sheetz") to match more.</div></div></div>
-    {% endif %}
     <div class="actions">
       <button class="btn primary">Save</button>
       <a class="btn ghost" href="{{ next }}">Cancel</a>

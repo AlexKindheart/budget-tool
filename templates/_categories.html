@@ -1,0 +1,16 @@
+{# Category <option>s grouped by type. A deposit only offers income categories and a payment only expense
+   categories; non-budget ones ([Transfer], [Beginning Balance]...) fit both. `side` is 'income', 'expense'
+   or '' (amount not known yet: list everything and let app.js filter as you type). The transaction's
+   current category is always listed so it never silently changes. The server checks the same rule. #}
+{% macro category_options(categories, side, current) %}
+  <option value="">Uncategorized</option>
+  {% for kind, label in [('income', 'Income'), ('expense', 'Expenses'), ('transfer', 'Non-budget')] %}
+    {% set items = categories|selectattr('kind', 'equalto', kind)|list %}
+    {% set shown = items if (not side or kind in (side, 'transfer')) else items|selectattr('id', 'equalto', current)|list %}
+    {% if shown %}
+      <optgroup label="{{ label }}" data-kind="{{ kind }}">
+        {% for c in shown %}<option value="{{ c.id }}" {{ 'selected' if c.id == current }}>{{ c.name }}</option>{% endfor %}
+      </optgroup>
+    {% endif %}
+  {% endfor %}
+{% endmacro %}

@@ -49,35 +49,4 @@
   </form>
 </section>
 
-<section class="card">
-  <div class="bar tight">
-    <h2>Payee rules</h2>
-    <form method="post"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="reapply">
-      <button class="btn ghost small" title="Re-sort bank transactions you haven't edited by hand">Re-apply to bank transactions</button></form>
-  </div>
-  <p class="muted small">When a bank transaction's description contains the text, it gets that payee name and/or category.
-     The longest matching text wins, so "sheetz" + Dining and "sheetz gas" + Fuel can live side by side.
-     Transactions you've edited by hand are never changed.</p>
-  <table>
-    <thead><tr><th>Description contains</th><th>Payee becomes</th><th>Category</th><th></th></tr></thead>
-    <tbody>
-    {% for r in rules %}
-      <tr><td><code>{{ r.match }}</code></td><td>{{ r.payee or '' }}</td><td>{{ r.category or '-' }}</td>
-        <td><form method="post"><input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete_rule">
-          <input type="hidden" name="id" value="{{ r.id }}"><button class="btn ghost small">Remove</button></form></td></tr>
-    {% else %}
-      <tr><td colspan="4" class="muted">No rules yet.</td></tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  <form method="post" class="inline">
-    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-    <input type="hidden" name="action" value="add_rule">
-    <input name="match" placeholder="Description contains…" required>
-    <input name="payee" placeholder="Payee becomes (optional)">
-    <select name="category_id"><option value="">(keep category)</option>
-      {% for c in cats %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select>
-    <button class="btn">Add rule</button>
-  </form>
-</section>
 {% endblock %}

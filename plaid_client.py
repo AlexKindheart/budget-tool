@@ -156,11 +156,8 @@ def _upsert_transaction(conn, t, account):
     bank_name = t.get("name") or ""
     merchant = t.get("merchant_name") or ""
     pfc = t.get("personal_finance_category") or {}
-    rule = db.match_rule(conn, f"{bank_name} {merchant}")
-
-    payee = (rule["payee"] if rule and rule["payee"] else None) or merchant or bank_name
-    category_id = (rule["category_id"] if rule and rule["category_id"] else None) or db.guess_category(
-        conn, pfc.get("primary"), pfc.get("detailed"), amount, account["kind"])
+    payee = merchant or bank_name
+    category_id = None  # you categorize every transaction yourself; new ones arrive Uncategorized
     cleared = "" if t.get("pending") else "c"
 
     existing = conn.execute("SELECT * FROM transactions WHERE plaid_id = ?", (t["transaction_id"],)).fetchone()
@@ -175,8 +172,7 @@ def _upsert_transaction(conn, t, account):
     if existing:
         if existing["payee_locked"]:
             payee = existing["payee"]
-        if existing["category_locked"]:
-            category_id = existing["category_id"]
+        category_id = existing["category_id"]  # a bank update never changes your category
         if existing["cleared"] == "R":
             cleared = "R"
         conn.execute(

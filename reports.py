@@ -57,16 +57,30 @@ def budgets(conn, months):
     return {r["category_id"]: r["s"] for r in rows}
 
 
-def budget_vs_actual(conn, start, end, budget_scale=1.0, months=None):
-    """Rows for a Report-style table. budget_scale prorates monthly budgets (weekly report)."""
-    months = months or months_between(start, end)
-    bud = budgets(conn, months)
+def prorated_budgets(conn, start, end):
+    """{category_id: budget} for start..end. Each month's budget is spread evenly over its days, so a
+    whole month (or year) gets its full budget and a week gets its share of each month it touches.
+    Used everywhere (Overview, Reports, Export) so the same dates always show the same budget."""
+    out, m = {}, date(start.year, start.month, 1)
+    while m <= end:
+        nxt = add_months(m, 1)
+        last = nxt - timedelta(days=1)
+        share = ((min(end, last) - max(start, m)).days + 1) / ((last - m).days + 1)
+        for cid, amount in budgets(conn, [month_key(m)]).items():
+            out[cid] = out.get(cid, 0) + amount * share
+        m = nxt
+    return out
+
+
+def budget_vs_actual(conn, start, end):
+    """Rows for a Report-style table: budget (prorated by day for partial months) vs. actual."""
+    bud = prorated_budgets(conn, start, end)
     act = actuals(conn, start, end)
     sections = {"income": [], "expense": []}
     for c in categories(conn):
         if c["kind"] not in sections:
             continue
-        b = round(bud.get(c["id"], 0) * budget_scale, 2)
+        b = round(bud.get(c["id"], 0), 2)
         a = round(act.get(c["id"], 0), 2)
         if b or a:
             diff = a - b if c["kind"] == "income" else b - a  # positive = good
@@ -99,6 +113,8 @@ def yearly(conn, year, start_balance=None, today=None):
         start_balance = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE date < ?",
                                      (date(year, 1, 1).isoformat(),)).fetchone()[0]
     months = [date(year, m, 1) for m in range(1, 13)]
+    # Averages cover the months that have started: all 12 for past years, Jan..this month for this year.
+    span = 12 if year < today.year else (today.month if year == today.year else 0)
     per_month = [actuals(conn, m, add_months(m, 1) - timedelta(days=1)) for m in months]
     unc = [uncategorized(conn, m, add_months(m, 1) - timedelta(days=1)) for m in months]
     rows = {"income": [], "expense": []}
@@ -107,10 +123,10 @@ def yearly(conn, year, start_balance=None, today=None):
             continue
         vals = [round(pm.get(c["id"], 0), 2) for pm in per_month]
         if any(vals):
-            rows[c["kind"]].append({"id": c["id"], "name": c["name"], "values": vals, "total": sum(vals), "avg": sum(vals) / 12})
+            rows[c["kind"]].append({"id": c["id"], "name": c["name"], "values": vals, "total": sum(vals), "avg": sum(vals) / span if span else 0})
     if any(unc):
         vals = [round(v, 2) for v in unc]
-        rows["expense"].append({"id": "none", "name": "Uncategorized", "values": vals, "total": sum(vals), "avg": sum(vals) / 12})
+        rows["expense"].append({"id": "none", "name": "Uncategorized", "values": vals, "total": sum(vals), "avg": sum(vals) / span if span else 0})
     inc = [sum(r["values"][i] for r in rows["income"]) for i in range(12)]
     exp = [sum(r["values"][i] for r in rows["expense"]) for i in range(12)]
     net = [inc[i] - exp[i] for i in range(12)]
@@ -123,7 +139,7 @@ def yearly(conn, year, start_balance=None, today=None):
         bal += change[i]
         end.append(round(bal, 2) if m <= today else None)
     return {"months": months, "income": rows["income"], "expense": rows["expense"],
-            "inc": inc, "exp": exp, "net": net, "other": other, "end": end, "start": round(start_balance, 2)}
+            "inc": inc, "exp": exp, "net": net, "other": other, "end": end, "start": round(start_balance, 2), "span": span}
 
 
 def daily_balances(conn, months=None, today=None, start=None, end=None):

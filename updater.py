@@ -212,6 +212,11 @@ def launch_swap(new_dir, work):
     dst = install_dir()
     if not os.path.isfile(os.path.join(dst, "BudgetTool.exe")) or not os.path.isdir(os.path.join(dst, "_internal")):
         raise RuntimeError(f"Unexpected install folder ({dst}); not updating it automatically.")
+    data, app_dir = os.path.normcase(os.path.realpath(DATA_DIR)), os.path.normcase(os.path.realpath(dst))
+    if data == app_dir or data.startswith(app_dir + os.sep):
+        # An update replaces everything in the app folder, which would delete your data.
+        raise RuntimeError(f"Your data folder ({DATA_DIR}) is inside the app folder, so updating would erase it. "
+                           "Run BudgetTool-Setup.exe and pick a data folder outside the app folder, then update.")
     script = os.path.join(work, "swap.ps1")
     with open(script, "w", encoding="utf-8-sig") as f:
         f.write(SWAP_SCRIPT)

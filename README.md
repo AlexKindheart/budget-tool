@@ -9,11 +9,11 @@ yearly budget, budget-vs-actual reports), except your bank transactions fill the
 | Screen | What it does |
 |---|---|
 | **Overview** | This month's income/expenses/net vs. budget, a 6/12/24-month income vs. expenses trend chart, spending by category, account balances, recent activity |
-| **Register** | Every transaction: Account, Date, Payee, Memo, Category, Clr, Payment, Deposit, running Balance. Add cash/manual entries, edit, filter, search |
+| **Register** | Every transaction: Account, Date, Payee, Memo, Category, Payment, Deposit, running Balance. Add cash/manual entries, edit, filter, search |
 | **Budget** | A yearly grid: each category × 12 months, with Total, Average, and Total Income / Expenses / NET / Projected End Balance |
 | **Reports** | Monthly or year-to-date budget vs. actual, a yearly month-by-month report, and a weekly / bi-weekly report |
-| **Accounts** | Accounts with savings goals and % reached, cleared and total balances, what the bank says, and bank connections |
-| **Categories** | Income, expense and non-budget categories ([Transfer], [Beginning Balance]), plus payee rules |
+| **Accounts** | Accounts with savings goals and % reached, posted and total balances, what the bank says, and bank connections |
+| **Categories** | Income, expense and non-budget categories ([Transfer], [Beginning Balance]) |
 | **Export** | Saves an Excel workbook for any date range and accounts: budget vs. actual, every transaction (sortable table), each category by month, and account balances |
 | **Settings** | Plaid keys, auto-sync interval, and app updates |
 
@@ -22,13 +22,13 @@ How the numbers work:
 - **Expense** categories count as spending (refunds reduce it). **Income** categories count as money in.
 - **Non-budget** categories ([Transfer], [Beginning Balance]) are left out of every total. Use them for money moving
   between your own accounts.
-- **Clr** works like a check register: blank = pending, **c** = cleared, **R** = reconciled. Bank transactions come in
-  as blank while pending and **c** once posted. Click the Clr button to change it.
-- Bank-linked accounts get an automatic [Beginning Balance] entry, so the register's cleared balance equals what the
+- Bank charges that haven't gone through yet show a **pending** label until your bank posts them.
+- Bank-linked accounts get an automatic [Beginning Balance] entry, so the register's posted balance equals what the
   bank reports.
-- **Payee rules** (Categories screen): when a bank description contains some text, set the payee name and/or category.
-  The longest match wins. Anything you edit by hand is never changed by a sync or a rule.
-- The weekly / bi-weekly report prorates the monthly budget (× 12 ÷ 52 or ÷ 26).
+- **You categorize every transaction yourself.** Bank transactions arrive Uncategorized (highlighted in the Register),
+  and a sync never changes a category you've picked. A payee you rename stays renamed.
+- Budgets for part of a month (a week, two weeks, a custom export range) are that month's budget spread evenly
+  over its days, so the Overview, Reports and Export always agree for the same dates.
 
 ## Install
 
@@ -43,8 +43,10 @@ How the numbers work:
 
 Double-click **`build-installer.bat`** to make `release\BudgetTool-Setup.exe`, a normal Windows installer you can send
 to a friend (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php): `winget install JRSoftware.InnoSetup`). It
-installs for that user without admin rights, adds Start Menu and Desktop shortcuts, and appears in **Settings → Apps**
-so it can be uninstalled. Uninstalling leaves their data in `%APPDATA%\BudgetTool`. Every GitHub release also includes
+installs for that user without admin rights, lets them choose the app folder and the data folder (the data folder
+is saved in `HKCU\Software\BudgetTool\DataDir`; if they already have data it offers to copy it there), adds Start Menu and
+Desktop shortcuts, and appears in **Settings → Apps**
+so it can be uninstalled. Uninstalling leaves their data where it is. Every GitHub release also includes
 `BudgetTool-Setup.exe`. The installer isn't code-signed, so Windows SmartScreen shows "Windows protected your PC"
 the first time: click **More info → Run anyway**.
 
@@ -68,7 +70,7 @@ Budget Tool checks this repo's GitHub releases every few hours while it's open. 
 see a banner. Click **Update now** (or **Settings → Updates**) and it downloads the new version, checks it against
 the release's published SHA-256 checksum, closes, swaps in the new program files and reopens. Your data isn't
 touched. If copying fails, the previous version is put back. Each update is logged to
-`%APPDATA%\BudgetTool\update.log`.
+`update.log` in the data folder.
 
 ### Publishing a new version
 
@@ -79,7 +81,8 @@ touched. If copying fails, the previous version is put back. Each update is logg
 
 ## Your data
 
-Everything is stored in `%APPDATA%\BudgetTool\budget.db`, including your Plaid keys and bank access tokens. Keep that
+Everything is stored in `budget.db` in your data folder (`%APPDATA%\BudgetTool` unless you picked another one
+in the installer; Settings shows where), including your Plaid keys and bank access tokens. Keep that
 folder private. Rebuilding or updating the app doesn't touch it.
 
 Upgrading from the first version keeps your bank connection and settings, saves a copy of the old database next to
@@ -96,7 +99,7 @@ The app runs a small server that only this computer can reach, and only with a k
 | `reports.py` | Budget vs. actual, yearly, weekly, and trend numbers |
 | `updater.py` | Checks GitHub releases, verifies and installs updates |
 | `plaid_client.py` | Plaid API calls and the sync that fills the register |
-| `db.py` | Database, starter categories, Plaid → category mapping, payee rules |
+| `db.py` | Database and starter categories |
 | `paths.py` | Where app files and your data live |
 | `templates/`, `static/` | Screen layouts, styles, scripts |
 | `build.bat` | Builds the .exe, installs it, makes shortcuts |

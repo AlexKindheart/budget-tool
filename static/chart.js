@@ -130,7 +130,7 @@
 
   function currentSeries(start) {
     if (picked.includes('all')) {
-      return [{ name: 'All accounts', cls: 'sa', color: 'var(--series-1)', values: data.all.slice(start) }];
+      return [{ name: 'All accounts', cls: 'sa', color: 'var(--series-all)', values: data.all.slice(start) }];
     }
     // Keep the accounts' own order (and colors), not the order they were ticked in.
     return data.accounts.filter((a) => picked.includes(String(a.id))).map((a) => ({
@@ -244,7 +244,7 @@
     // One line: soft gradient fill underneath it.
     if (single) {
       const g = el('linearGradient', { id: 'balfill', x1: 0, y1: 0, x2: 0, y2: 1 }, defs);
-      el('stop', { offset: '0%', style: `stop-color:${series[0].color};stop-opacity:.30` }, g);
+      el('stop', { offset: '0%', style: `stop-color:${series[0].color};stop-opacity:.2` }, g);
       el('stop', { offset: '100%', style: `stop-color:${series[0].color};stop-opacity:0` }, g);
       runs[0].forEach((pts) => {
         if (pts.length < 2) return;
