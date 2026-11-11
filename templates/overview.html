@@ -43,13 +43,18 @@
 <section class="card trend" data-trend>
   <div class="bar tight">
     <div>
-      <h2>Balances</h2>
-      <div class="muted small" data-subtitle></div>
+      <h2>Balances <span class="muted small" data-subtitle></span></h2>
+      <div class="hero" data-hero aria-live="polite">
+        <span class="hero-value" data-hero-value></span>
+        <span class="delta" data-hero-delta></span>
+        <span class="muted small" data-hero-when></span>
+      </div>
     </div>
-    <div class="seg" role="group" aria-label="How many months">
-      <button type="button" data-range="6">6 mo</button>
-      <button type="button" data-range="12" class="on">12 mo</button>
-      <button type="button" data-range="24">24 mo</button>
+    <div class="seg" role="group" aria-label="Time range">
+      <button type="button" data-range="week">Week</button>
+      <button type="button" data-range="month">Month</button>
+      <button type="button" data-range="year" class="on">Year</button>
+      <button type="button" data-range="all">All Time</button>
     </div>
   </div>
   <div class="acct-picks" role="group" aria-label="Accounts to show">
@@ -61,7 +66,7 @@
   <div class="chart" role="img" aria-label="Account balances over time"></div>
   <div class="tip" hidden></div>
   <details class="tableview">
-    <summary class="small muted">Show as a table (month-end balances)</summary>
+    <summary class="small muted">Show as a table</summary>
     <div class="scroll"><table><thead></thead><tbody></tbody></table></div>
   </details>
   <script type="application/json" class="trend-data">{{ trend|tojson }}</script>

@@ -113,12 +113,20 @@ def yearly(conn, year, start_balance=0.0):
             "inc": inc, "exp": exp, "net": net, "end": end}
 
 
-def daily_balances(conn, months=24, today=None):
+def daily_balances(conn, months=None, today=None):
     """End-of-day register balance for each account, every day from the first of the month
-    `months - 1` months ago through today. Days before an account's first transaction are None.
+    `months - 1` months ago through today (months=None: from the month of the earliest transaction,
+    and at least a year back). Days before an account's first transaction are None.
     Credit cards and loans come out negative (money owed), so "all" is your net worth."""
     today = today or date.today()
-    start = add_months(date(today.year, today.month, 1), -(months - 1))
+    if months is None:
+        start = add_months(date(today.year, today.month, 1), -12)
+        earliest = conn.execute("SELECT MIN(date) FROM transactions").fetchone()[0]
+        if earliest:
+            e = date.fromisoformat(earliest[:10])
+            start = min(start, date(e.year, e.month, 1))
+    else:
+        start = add_months(date(today.year, today.month, 1), -(months - 1))
     dates = [start + timedelta(days=i) for i in range((today - start).days + 1)]
     accounts = conn.execute("SELECT id, name, kind, closed FROM accounts ORDER BY closed, sort, name").fetchall()
     series = []
