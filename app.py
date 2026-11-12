@@ -26,6 +26,7 @@ from paths import DATA_DIR, RESOURCE_DIR
 
 db.init()
 with db.connect() as _conn:  # pair up transfers already in the register (and after an update)
+    transfers.debt_upgrade(_conn)
     transfers.match(_conn)
 
 app = Flask(__name__,
@@ -175,8 +176,8 @@ def check_category(conn, category_id, amount, current=None, when=None):
 
 
 def category_suggestions(conn, txs):
-    """{transaction id: (category id, name, why)}: [Transfer] when your bank says it's a transfer or a credit card
-    payment; otherwise the category you picked most recently for the same payee, if it still fits (income vs
+    """{transaction id: (category id, name, why)}: Debt for a credit card payment going out, [Transfer] when your
+    bank says it's a transfer; otherwise the category you picked most recently for the same payee, if it still fits (income vs
     expense, and used in that transaction's year). Shown as a one-click button; nothing is categorized
     automatically (transfers between two of your accounts are matched up by transfers.py)."""
     if not txs:
@@ -189,7 +190,13 @@ def category_suggestions(conn, txs):
                              ORDER BY date DESC, id DESC"""):
         last.setdefault((r["p"], r["dep"]), []).append(r["category_id"])
     out = {}
+    debts = transfers.debt_ids(conn)
     for t in txs:
+        debt = next((c for c in debts if db.active_in(cats[c], int(t["date"][:4]))), None)
+        if transfers.card_payment_out(t) and t["transfer_state"] != "no" and debt:
+            out[t["id"]] = (debt, cats[debt]["name"], "Your bank says this is a credit card payment. "
+                                                      "Click to count it as debt paid.")
+            continue
         if transfers.looks_like_transfer(t) and t["transfer_state"] != "no":
             out[t["id"]] = (tid, db.TRANSFER, "Your bank says this is a transfer or a credit card payment. "
                                               "Transfers aren't income or spending. Click to use [Transfer].")

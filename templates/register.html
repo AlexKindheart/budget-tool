@@ -69,7 +69,7 @@
           {% if t.memo %}<div class="muted small">{{ t.memo }}</div>{% endif %}
           {% if t.bank_name and t.bank_name != t.payee %}<div class="muted small" title="As your bank describes it">{{ t.bank_name }}</div>{% endif %}
           {% if t.transfer_pair %}
-            <div class="small"><span class="pill" title="Matched with {{ t.pair_account }} on {{ t.pair_date }}. Transfers aren't income or spending.">&harr; {{ t.pair_account }}</span>
+            <div class="small"><span class="pill" title="Matched with {{ t.pair_account }} on {{ t.pair_date }}. {{ 'Counts as debt paid.' if t.category_kind == 'expense' else "Transfers aren't income or spending." }}">&harr; {{ t.pair_account }}</span>
               <form method="post" action="{{ url_for('register_transfer', tx_id=t.id) }}" class="tfform">
                 <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path }}">
                 <button class="linkish small" title="Undo the match: both go back to Uncategorized">Not a transfer</button></form></div>

@@ -25,12 +25,16 @@ How the numbers work:
 - **Transfers between your accounts are matched for you.** A payment in one account and a deposit of the same amount
   in another, within 5 days, are paired and both get [Transfer] (the Register shows "↔ Savings" on each side;
   **Not a transfer** undoes it for good). Only Uncategorized transactions are matched, and pending ones wait until
-  they post. When your bank marks something as a transfer or credit card payment but the other side isn't in Budget
-  Tool, you get a one-click **[Transfer]?** suggestion instead.
-- **Transfers to check** (on the To do card, and a Register filter) lists a [Transfer] with no other side, a
-  transfer-looking transaction that's still Uncategorized, and a credit card payment filed as spending (the card's
-  purchases already count, so that counts it twice). **Other side isn't in Budget Tool** marks a one-sided transfer
-  (to a friend, or an account you don't track here) as fine.
+  they post. When your bank marks something as a transfer but the other side isn't in Budget Tool, you get a
+  one-click **[Transfer]?** suggestion instead.
+- **Credit card and loan payments count as debt paid.** Paying a credit card or loan account from checking (or any
+  other everyday account) is matched the same way, but the payment gets your **Debt** category, so it shows as
+  spending, and only the card or loan side gets [Transfer]. A card payment whose card isn't in Budget Tool gets a
+  one-click **Debt?** suggestion. (The card's purchases count as spending too; pick [Transfer] for the payment if
+  you'd rather not count both.)
+- **Transfers to check** (on the To do card, and a Register filter) lists a [Transfer] with no other side and a
+  transfer-looking transaction that's still Uncategorized. **Other side isn't in Budget Tool** marks a one-sided
+  transfer (to a friend, or an account you don't track here) as fine.
 - Bank charges that haven't gone through yet show a **pending** label until your bank posts them.
 - Bank-linked accounts get an automatic [Beginning Balance] entry, so the register's posted balance equals what the
   bank reports.
