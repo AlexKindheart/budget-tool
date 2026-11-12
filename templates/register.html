@@ -75,7 +75,7 @@
               {{ category_options(categories, 'income' if t.amount > 0 else ('expense' if t.amount < 0 else ''), t.category_id, t.date[:4]|int) }}
             </select>
             {% if suggest.get(t.id) %}<button type="button" class="chip" data-suggest="{{ suggest[t.id][0] }}"
-              title="You used this for {{ t.payee }} before. Click to use it again.">{{ suggest[t.id][1] }}?</button>{% endif %}
+              title="{{ suggest[t.id][2] }}">{{ suggest[t.id][1] }}?</button>{% endif %}
           </form>
         </td>
         <td class="num">{% if t.amount < 0 %}{{ (-t.amount)|money }}{% endif %}</td>

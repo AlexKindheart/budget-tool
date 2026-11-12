@@ -33,7 +33,8 @@ How the numbers work:
 **Less to do yourself:** the Overview's *Get started* checklist walks a new user through setup, and its *To do* card
 lists what needs you (transactions without a category, a bank to reconnect, an account that doesn't match the bank,
 a month with no budget), each one click away. In the Register, a transaction from a payee you've categorized before
-shows a one-click suggestion (nothing is categorized for you). On the Budget screen, **Fill from my spending** fills
+shows a one-click suggestion (nothing is categorized for you). When your bank marks a transaction as a credit card
+payment you get a **Debt?** suggestion, and as a transfer, **[Transfer]?**. On the Budget screen, **Fill from my spending** fills
 empty months with your average over the last 12 months.
 
 ## Install

@@ -172,8 +172,9 @@ def check_category(conn, category_id, amount, current=None, when=None):
 
 
 def category_suggestions(conn, txs):
-    """{transaction id: (category id, name)}: the category you picked most recently for the same payee, if it
-    still fits (income vs expense, and used in that transaction's year). Shown as a one-click button; nothing is
+    """{transaction id: (category id, name, why)}: the category you picked most recently for the same payee, if it
+    still fits (income vs expense, and used in that transaction's year). Otherwise, when your bank marks it as a
+    credit card payment going out, Debt; as a transfer, [Transfer]. Shown as a one-click button; nothing is
     categorized automatically."""
     if not txs:
         return {}
@@ -189,8 +190,22 @@ def category_suggestions(conn, txs):
         for cid in last.get(((t["payee"] or "").strip().lower(), 1 if t["amount"] > 0 else 0), []):
             c = cats.get(cid)
             if c and db.active_in(c, year) and c["kind"] in (want, "transfer"):
-                out[t["id"]] = (cid, c["name"])
+                out[t["id"]] = (cid, c["name"], f"You used this for {t['payee']} before. Click to use it again.")
                 break
+        if t["id"] in out:
+            continue
+        card_payment = t["pfc_detailed"] == "LOAN_PAYMENTS_CREDIT_CARD_PAYMENT"
+        if card_payment and t["amount"] < 0:
+            debt = next((c for c in cats.values() if c["name"].lower() == "debt" and c["kind"] == "expense"
+                         and db.active_in(c, year)), None)
+            if debt:
+                out[t["id"]] = (debt["id"], debt["name"], "Your bank says this is a credit card payment. "
+                                                          "Click to count it as debt paid.")
+        elif card_payment or t["pfc_primary"] in ("TRANSFER_IN", "TRANSFER_OUT"):
+            tr = next((c for c in cats.values() if c["name"] == db.TRANSFER and db.active_in(c, year)), None)
+            if tr:
+                out[t["id"]] = (tr["id"], tr["name"], "Your bank says this is a transfer. Transfers aren't income "
+                                                      "or spending. Click to use [Transfer].")
     return out
 
 

@@ -327,6 +327,6 @@ table.plan [data-warn-off]:not([hidden]) { color: var(--warn); display: block; }
 .steps li.done { color: var(--muted); }
 .steps li.done .tick { background: var(--sun); color: var(--on-accent); }
 .todo-item.warn span { color: var(--warn); }
-.chip { margin-left: .35rem; padding: .15rem .55rem; border-radius: var(--radius); border: 1px dashed var(--sun); background: transparent;
-  color: var(--sun); font-size: .82rem; cursor: pointer; white-space: nowrap; }
-.chip:hover { background: var(--sun); color: var(--on-accent); border-style: solid; }
+.chip { margin-left: .3rem; padding: 0 .2rem; border: 0; border-radius: var(--radius); background: transparent;
+  color: var(--muted); font-size: .78rem; cursor: pointer; white-space: nowrap; }
+.chip:hover, .chip:focus-visible { color: var(--text); text-decoration: underline; }
