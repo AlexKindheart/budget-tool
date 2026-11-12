@@ -79,15 +79,6 @@ def prorated_budgets(conn, start, end):
     return out
 
 
-def transfers_moved(conn, start, end):
-    """Money that went out of an account as a transfer (non-budget, not an opening balance): shown as
-    "Transfers (not counted)" so you can see what was left out of income and expenses."""
-    return round(-conn.execute(
-        """SELECT COALESCE(SUM(t.amount), 0) FROM transactions t JOIN categories c ON c.id = t.category_id
-           WHERE c.kind = 'transfer' AND t.is_opening = 0 AND t.amount < 0 AND lower(c.name) != lower(?)
-             AND t.date BETWEEN ? AND ?""", ("[Beginning Balance]", start.isoformat(), end.isoformat())).fetchone()[0], 2)
-
-
 def budget_vs_actual(conn, start, end):
     """Rows for a Report-style table: budget (prorated by day for partial months) vs. actual."""
     bud = prorated_budgets(conn, start, end)
@@ -114,7 +105,6 @@ def budget_vs_actual(conn, start, end):
             r["used"] = r["actual"] / r["budget"] if r["budget"] else None
     totals["net"] = {"budget": totals["income"]["budget"] - totals["expense"]["budget"],
                      "actual": totals["income"]["actual"] - totals["expense"]["actual"]}
-    totals["transfers"] = transfers_moved(conn, start, end)
     return {"income": sections["income"], "expense": sections["expense"], "totals": totals}
 
 

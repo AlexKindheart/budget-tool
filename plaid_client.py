@@ -5,7 +5,6 @@ from datetime import date, datetime, timedelta, timezone
 import requests
 
 import db
-import transfers
 
 PLAID_HOSTS = {
     "sandbox": "https://sandbox.plaid.com",
@@ -269,7 +268,6 @@ def sync_item(item_id):
                              [(r["transaction_id"],) for r in removed])
             for acc in accounts.values():
                 refresh_opening_balance(conn, acc["id"])
-            transfers.match(conn)
             conn.execute(
                 "UPDATE items SET cursor = ?, last_synced = ?, error = NULL WHERE item_id = ?",
                 (cursor, datetime.now(timezone.utc).isoformat(timespec="seconds"), item_id),

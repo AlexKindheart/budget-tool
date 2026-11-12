@@ -132,10 +132,8 @@ document.querySelectorAll('[data-catfilter]').forEach((form) => {
       fetch(form.action, { method: 'POST', body, headers: { 'X-Requested-With': 'fetch' } })
         .then((r) => r.json().catch(() => ({})).then((d) => {
           if (!r.ok || !d.ok) throw new Error(d.error || "Couldn't save that category. Refresh the page and try again.");
-          return d;
         }))
-        .then((d) => {
-          if (d.reload) { window.location.reload(); return; }  // a transfer was matched or unmatched: show both sides
+        .then(() => {
           last = sel.value;
           sel.classList.toggle('missing', !sel.value);
           sel.classList.add('saved');

@@ -11,7 +11,7 @@ from datetime import datetime
 from paths import DATA_DIR
 
 DB_PATH = os.path.join(DATA_DIR, "budget.db")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -68,9 +68,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     payee_locked    INTEGER NOT NULL DEFAULT 0,  -- you renamed it; sync won't change it
     is_opening      INTEGER NOT NULL DEFAULT 0,  -- auto [Beginning Balance] for bank accounts
     pfc_primary     TEXT,                   -- Plaid's category, kept so we can re-sort later
-    pfc_detailed    TEXT,
-    transfer_pair   INTEGER,                -- the other side of a transfer between your accounts (transfers.py)
-    transfer_state  TEXT                    -- NULL | 'no' (not a transfer) | 'outside' (other side not tracked here)
+    pfc_detailed    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_tx_account ON transactions(account_id, date);
@@ -159,10 +157,6 @@ def init():
         if cat_cols and "active_from" not in cat_cols:
             _migrate_categories_to_v3(conn)
         conn.executescript(SCHEMA)
-        tx_cols = [r["name"] for r in conn.execute("PRAGMA table_info(transactions)")]
-        for col, kind in (("transfer_pair", "INTEGER"), ("transfer_state", "TEXT")):  # version 4
-            if col not in tx_cols:
-                conn.execute(f"ALTER TABLE transactions ADD COLUMN {col} {kind}")
         set_setting(conn, "schema_version", str(SCHEMA_VERSION))
         if conn.execute("SELECT COUNT(*) FROM categories").fetchone()[0] == 0:
             conn.executemany(

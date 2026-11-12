@@ -20,14 +20,10 @@ import db
 import export
 import plaid_client as plaid
 import reports
-import transfers
 import updater
 from paths import DATA_DIR, RESOURCE_DIR
 
 db.init()
-with db.connect() as _conn:  # pair up transfers already in the register (and after an update)
-    transfers.debt_upgrade(_conn)
-    transfers.match(_conn)
 
 app = Flask(__name__,
             template_folder=os.path.join(RESOURCE_DIR, "templates"),
@@ -176,13 +172,11 @@ def check_category(conn, category_id, amount, current=None, when=None):
 
 
 def category_suggestions(conn, txs):
-    """{transaction id: (category id, name, why)}: Debt for a credit card payment going out, [Transfer] when your
-    bank says it's a transfer; otherwise the category you picked most recently for the same payee, if it still fits (income vs
-    expense, and used in that transaction's year). Shown as a one-click button; nothing is categorized
-    automatically (transfers between two of your accounts are matched up by transfers.py)."""
+    """{transaction id: (category id, name)}: the category you picked most recently for the same payee, if it
+    still fits (income vs expense, and used in that transaction's year). Shown as a one-click button; nothing is
+    categorized automatically."""
     if not txs:
         return {}
-    tid = transfers.transfer_category(conn)
     cats = {c["id"]: c for c in conn.execute("SELECT * FROM categories")}
     last = {}
     for r in conn.execute("""SELECT lower(trim(payee)) AS p, amount > 0 AS dep, category_id FROM transactions
@@ -190,22 +184,12 @@ def category_suggestions(conn, txs):
                              ORDER BY date DESC, id DESC"""):
         last.setdefault((r["p"], r["dep"]), []).append(r["category_id"])
     out = {}
-    debts = transfers.debt_ids(conn)
     for t in txs:
-        debt = next((c for c in debts if db.active_in(cats[c], int(t["date"][:4]))), None)
-        if transfers.card_payment_out(t) and t["transfer_state"] != "no" and debt:
-            out[t["id"]] = (debt, cats[debt]["name"], "Your bank says this is a credit card payment. "
-                                                      "Click to count it as debt paid.")
-            continue
-        if transfers.looks_like_transfer(t) and t["transfer_state"] != "no":
-            out[t["id"]] = (tid, db.TRANSFER, "Your bank says this is a transfer or a credit card payment. "
-                                              "Transfers aren't income or spending. Click to use [Transfer].")
-            continue
         year, want = int(t["date"][:4]), ("income" if t["amount"] > 0 else "expense")
         for cid in last.get(((t["payee"] or "").strip().lower(), 1 if t["amount"] > 0 else 0), []):
             c = cats.get(cid)
             if c and db.active_in(c, year) and c["kind"] in (want, "transfer"):
-                out[t["id"]] = (cid, c["name"], f"You used this for {t['payee']} before. Click to use it again.")
+                out[t["id"]] = (cid, c["name"])
                 break
     return out
 
@@ -315,11 +299,6 @@ def todo_items(conn):
     if n:
         items.append((f"{n} transaction{'' if n == 1 else 's'} need{'s' if n == 1 else ''} a category.", "Sort them",
                       url_for("register", month="all", category="none"), "todo"))
-    n = len(transfers.to_check(conn))
-    if n:
-        items.append((f"{n} transfer{'' if n == 1 else 's'} to check, so {'it isn' if n == 1 else 'they aren'}'t "
-                      "counted as income or spending by mistake.", "Check them",
-                      url_for("register", month="all", transfers="check"), "todo"))
     balances = account_balances(conn)
     for a in conn.execute("SELECT * FROM accounts WHERE closed = 0 AND plaid_account_id IS NOT NULL"):
         bank = plaid.bank_balance_in_register_sign(a)
@@ -367,7 +346,6 @@ def register():
     cat = request.args.get("category", "")
     q = request.args.get("q", "").strip()
     uncleared = request.args.get("uncleared") == "1"
-    check = request.args.get("transfers") == "check"
 
     where, params = ["1=1"], []
     # month=range&from=YYYY-MM-DD&to=YYYY-MM-DD: a date span (links from the Overview's year / week / all time).
@@ -401,15 +379,10 @@ def register():
         where.append("t.cleared = '' AND t.plaid_id IS NOT NULL")
 
     with db.connect() as conn:
-        to_check = transfers.to_check(conn)
-        if check:
-            where.append("t.id IN (" + (",".join(str(i) for i in to_check) or "0") + ")")
         txs = conn.execute(
-            f"""SELECT t.*, c.name AS category, c.kind AS category_kind, a.name AS account,
-                       pa.name AS pair_account, p.date AS pair_date
+            f"""SELECT t.*, c.name AS category, c.kind AS category_kind, a.name AS account
                 FROM transactions t JOIN accounts a ON a.id = t.account_id
                 LEFT JOIN categories c ON c.id = t.category_id
-                LEFT JOIN transactions p ON p.id = t.transfer_pair LEFT JOIN accounts pa ON pa.id = p.account_id
                 WHERE {' AND '.join(where)} ORDER BY t.date DESC, t.id DESC LIMIT 3000""", params).fetchall()
         # Running balance per account, like the Account Balance column.
         running, totals = {}, {}
@@ -428,7 +401,7 @@ def register():
         "register.html", txs=txs, running=running, categories=categories, accounts=accounts,
         month=month_raw, label=label, span=span,
         prev=reports.month_key(reports.add_months(month_d, -1)), nxt=reports.month_key(reports.add_months(month_d, 1)),
-        account=account, cat=cat, q=q, uncleared=uncleared, suggest=suggest, check=check, to_check=to_check,
+        account=account, cat=cat, q=q, uncleared=uncleared, suggest=suggest,
         total_in=sum(t["amount"] for t in txs if t["amount"] > 0),
         total_out=-sum(t["amount"] for t in txs if t["amount"] < 0))
 
@@ -468,9 +441,7 @@ def register_add():
                                          category_locked, payee_locked) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)""",
             (t["account_id"], t["date"], t["payee"], t["memo"], t["amount"], t["category_id"], t["cleared"]))
         plaid.refresh_opening_balance(conn, t["account_id"])
-        paired = transfers.match(conn)
-    flash("Transaction added." + (" It matches one in another account, so both are now a [Transfer]."
-                                  if paired else ""), "ok")
+    flash("Transaction added.", "ok")
     return back("register")
 
 
@@ -491,8 +462,6 @@ def register_edit(tx_id):
             except ValueError as e:
                 flash(str(e), "error")
                 return redirect(url_for("register_edit", tx_id=tx_id, next=request.form.get("next")))
-            if t["category_id"] != tx["category_id"]:
-                transfers.category_changed(conn, tx, t["category_id"])
             conn.execute(
                 """UPDATE transactions SET account_id=?, date=?, payee=?, memo=?, amount=?, category_id=?,
                    cleared=?, category_locked=1, payee_locked=1 WHERE id=?""",
@@ -500,7 +469,6 @@ def register_edit(tx_id):
             flash("Saved.", "ok")
             for acc_id in {tx["account_id"], t["account_id"]}:
                 plaid.refresh_opening_balance(conn, acc_id)
-            transfers.match(conn)
             return redirect(request.form.get("next") or url_for("register"))
         categories = all_categories(conn)
         accounts = all_accounts(conn)
@@ -518,7 +486,6 @@ def register_delete(tx_id):
         elif tx:
             conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
             plaid.refresh_opening_balance(conn, tx["account_id"])
-            transfers.clean_up(conn)
             flash("Transaction deleted.", "ok")
     return redirect(request.form.get("next") or url_for("register"))
 
@@ -539,26 +506,9 @@ def register_category(tx_id):
                 return jsonify(error=str(e)), 400
             flash(str(e), "error")
             return back("register")
-        transfers.category_changed(conn, tx, category_id)
         conn.execute("UPDATE transactions SET category_id = ?, category_locked = 1 WHERE id = ?", (category_id, tx_id))
-        paired = transfers.match(conn)
         if quiet:
-            return jsonify(ok=True, reload=bool(paired or tx["transfer_pair"]))
-    return back("register")
-
-
-@app.post("/register/<int:tx_id>/transfer")
-def register_transfer(tx_id):
-    """Not a transfer (undo a match) / Other side isn't in Budget Tool (a one-sided transfer is fine)."""
-    with db.connect() as conn:
-        if not conn.execute("SELECT 1 FROM transactions WHERE id = ?", (tx_id,)).fetchone():
-            abort(404)
-        if request.form.get("action") == "outside":
-            transfers.outside(conn, tx_id)
-            flash("Marked as a transfer to or from an account you don't track here. It's left out of income and spending.", "ok")
-        else:
-            transfers.not_a_transfer(conn, tx_id)
-            flash("Not a transfer: back to Uncategorized, and it won't be matched again. Pick its category.", "ok")
+            return jsonify(ok=True)
     return back("register")
 
 
