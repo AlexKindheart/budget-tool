@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Plan {{ year }}{% endblock %}
+{% block content %}
+<div class="bar">
+  <h1>Categories for {{ year }}</h1>
+  <a class="btn ghost" href="{{ url_for('categories_page') }}">Back</a>
+</div>
+
+<section class="card">
+  <p>Changes here start on <strong>January 1, {{ year }}</strong>. {{ year - 1 }} and earlier keep their categories
+     exactly as they are, so past reports don't change.</p>
+  <ul class="muted small">
+    <li><strong>Rename</strong> or change the <strong>type</strong>: {{ year }} gets the new version, earlier years keep the old one.</li>
+    <li><strong>Untick</strong> to stop using a category from {{ year }}.</li>
+    <li><strong>Add</strong> new categories at the bottom.</li>
+  </ul>
+</section>
+
+<form method="post" data-confirm="Save these changes for {{ year }} and later? {{ year - 1 }} and earlier stay as they are.">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="year" value="{{ year }}">
+  <section class="card">
+    <table class="plan">
+      <thead><tr><th>Use in {{ year }}</th><th>Name</th><th>Type</th><th></th></tr></thead>
+      {% for kind, title in [('income', 'INCOME'), ('expense', 'EXPENSE'), ('transfer', 'NON-BUDGET')] %}
+      <tbody>
+        {% set group = rows|selectattr('kind', 'equalto', kind)|list %}
+        {% if group %}<tr class="section"><td colspan="4">{{ title }}</td></tr>{% endif %}
+        {% for c in group %}
+          <tr data-plan-row>
+            <td><input type="checkbox" name="keep_{{ c.id }}" value="1" checked aria-label="Use {{ c.name }} in {{ year }}"></td>
+            <td><input name="name_{{ c.id }}" value="{{ c.name }}" data-original="{{ c.name }}" required></td>
+            <td><select name="kind_{{ c.id }}">
+              {% for k, l in [('income', 'Income'), ('expense', 'Expense'), ('transfer', 'Non-budget')] %}<option value="{{ k }}" {{ 'selected' if c.kind == k }}>{{ l }}</option>{% endfor %}
+            </select></td>
+            <td class="small muted">{% if c.active_from == year %}new for {{ year }}{% endif %}
+              {% if c.later_tx %}<span data-warn-off hidden>{{ c.later_tx }} transaction{{ '' if c.later_tx == 1 else 's' }} in {{ year }}+ will become uncategorized</span>{% endif %}
+              {% if c.budgeted %}<span data-warn-off hidden>its {{ year }} budget will be removed</span>{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+      {% endfor %}
+      <tbody>
+        <tr class="section"><td colspan="4">ADD FOR {{ year }}</td></tr>
+        {% for i in new_rows %}
+          <tr>
+            <td></td>
+            <td><input name="new_name_{{ i }}" placeholder="New category name"></td>
+            <td><select name="new_kind_{{ i }}">
+              <option value="expense">Expense</option><option value="income">Income</option><option value="transfer">Non-budget</option>
+            </select></td>
+            <td></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="actions">
+      <button class="btn primary">Save {{ year }} categories</button>
+      <a class="btn ghost" href="{{ url_for('categories_page') }}">Cancel</a>
+    </div>
+  </section>
+</form>
+{% endblock %}

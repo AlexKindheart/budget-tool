@@ -1,82 +1,112 @@
-"""Self-updater. Checks this app's GitHub releases and installs a newer version.
+r"""Updates: every commit pushed to the main branch on GitHub is an update (no releases needed).
 
-Only ever downloads from REPO's releases, over HTTPS, and only installs a zip whose SHA-256
-matches the checksum published with the release. Your data (%APPDATA%\\BudgetTool) is never touched;
-only the program folder is replaced, and the old one is restored if copying fails.
+Checking asks GitHub for the newest commit on main and compares it with the commit this copy was built from
+(app\COMMIT). Installing (done by "Update Budget Tool.exe", see update_gui.py):
+  1. downloads exactly that commit's code from GitHub (fixed address, HTTPS),
+  2. copies only Budget Tool's own files (code, templates, static, VERSION, requirements.txt) into a new folder,
+  3. installs any new libraries if requirements.txt changed (into the private runtime\),
+  4. checks every .py file compiles,
+  5. swaps the new app\ in, keeping the previous one as app.previous (put back automatically if the swap fails).
+Only app\ (and, when needed, libraries in runtime\) change; the data folder is never touched.
+Running from source (no app\COMMIT) never updates itself: use git pull.
 """
-import hashlib
+import io
 import json
 import os
+import py_compile
 import re
 import shutil
 import subprocess
-import sys
-import tempfile
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 
 import requests
 
 import db
-from paths import DATA_DIR, RESOURCE_DIR
+import paths
 
 REPO = "AlexKindheart/budget-tool"
-ASSET = "BudgetTool-windows.zip"
-CHECK_EVERY = timedelta(hours=6)
-API = f"https://api.github.com/repos/{REPO}/releases/latest"
+BRANCH = "main"
+API = f"https://api.github.com/repos/{REPO}"
 HEADERS = {"Accept": "application/vnd.github+json", "User-Agent": "BudgetTool-updater"}
+CHECK_EVERY = timedelta(hours=6)
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+MAX_DOWNLOAD = 100 * 1024 * 1024
+APP_DIRS = ("templates", "static")                  # copied whole
+APP_FILES = ("VERSION", "requirements.txt")          # plus every top-level .py file
+MUST_HAVE = ("app.py", "budget_tool.py", "update_gui.py", "updater.py", "paths.py", "VERSION",
+             os.path.join("templates", "base.html"), os.path.join("static", "style.css"))
+CREATE_NO_WINDOW = 0x08000000
 
+
+# ---------------------------------------------------------------- what's installed
 
 def current_version():
+    return version_of(paths.SOURCE_DIR)
+
+
+def version_of(folder):
     try:
-        with open(os.path.join(RESOURCE_DIR, "VERSION"), encoding="utf-8") as f:
+        with open(os.path.join(folder, "VERSION"), encoding="utf-8") as f:
             return f.read().strip()
     except OSError:
         return "0.0.0"
 
 
-def parse_version(v):
-    """'v1.10.2' -> (1, 10, 2). Anything unparseable sorts lowest."""
-    m = re.match(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", (v or "").strip())
-    return tuple(int(x or 0) for x in m.groups()) if m else (0, 0, 0)
+def installed_commit():
+    """The commit this copy was built from, or None (running from source)."""
+    try:
+        with open(os.path.join(paths.SOURCE_DIR, "COMMIT"), encoding="utf-8") as f:
+            sha = f.read().strip()
+        return sha if SHA_RE.match(sha) else None
+    except OSError:
+        return None
 
 
-def is_installed_app():
-    """True when running as the built .exe (updates can't replace a source checkout)."""
-    return bool(getattr(sys, "frozen", False))
+def label(version, sha):
+    return f"{version} ({sha[:7]})" if sha else version
 
 
-def install_dir():
-    return os.path.dirname(sys.executable)
+def can_install():
+    return bool(paths.INSTALLED and installed_commit())
 
+
+# ---------------------------------------------------------------- checking
 
 def cached():
     with db.connect() as conn:
         raw = db.get_setting(conn, "update_check")
     try:
-        return json.loads(raw) if raw else None
+        info = json.loads(raw) if raw else None
     except ValueError:
         return None
+    return info if info and info.get("kind") == "commits" else None  # ignore answers from the old release updater
 
 
 def status():
     """What the screens show, from the last check (no network)."""
     info = cached() or {}
-    latest = info.get("latest")
+    mine = installed_commit()
+    latest = info.get("latest_sha")
+    msgs = info.get("messages") or []
     return {
-        "current": current_version(),
-        "latest": latest,
-        "available": bool(latest and info.get("url") and parse_version(latest) > parse_version(current_version())),
+        "current": label(current_version(), mine),
+        "latest": label(info.get("latest_version") or "", latest) if latest else None,
+        "latest_sha": latest,
+        "available": bool(can_install() and latest and latest != mine and info.get("ahead")),
+        "count": info.get("count", 0),
+        "notes": "\n".join("• " + m for m in msgs),
+        "messages": msgs,
         "checked_at": info.get("checked_at"),
-        "notes": info.get("notes") or "",
-        "page": info.get("page"),
         "error": info.get("error"),
-        "can_install": is_installed_app(),
+        "can_install": can_install(),
+        "from_source": not paths.INSTALLED,
     }
 
 
 def check(force=False):
-    """Ask GitHub for the latest release (at most every 6 hours unless forced). Returns status()."""
+    """Ask GitHub for the newest commit on main (at most every 6 hours unless forced). Returns status()."""
     info = cached()
     if info and not force and info.get("checked_at"):
         try:
@@ -86,147 +116,214 @@ def check(force=False):
             pass
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     try:
-        resp = requests.get(API, headers=HEADERS, timeout=20)
-        if resp.status_code == 404:
-            info = {"checked_at": now, "latest": None, "error": None}
-        else:
-            resp.raise_for_status()
-            rel = resp.json()
-            assets = {a["name"]: a for a in rel.get("assets", [])}
-            zip_asset = assets.get(ASSET)
-            sum_asset = assets.get(ASSET + ".sha256")
-            info = {
-                "checked_at": now,
-                "latest": rel.get("tag_name"),
-                "notes": (rel.get("body") or "")[:4000],
-                "page": rel.get("html_url"),
-                "url": zip_asset["browser_download_url"] if zip_asset else None,
-                "size": zip_asset.get("size") if zip_asset else None,
-                # GitHub publishes "sha256:<hex>" for each asset; the .sha256 file is the fallback.
-                "digest": (zip_asset or {}).get("digest"),
-                "sum_url": sum_asset["browser_download_url"] if sum_asset else None,
-                "error": None,
-            }
+        head = requests.get(f"{API}/commits/{BRANCH}", headers=HEADERS, timeout=20)
+        head.raise_for_status()
+        head = head.json()
+        latest = head["sha"]
+        if not SHA_RE.match(latest):
+            raise RuntimeError("GitHub sent an unexpected answer")
+        mine = installed_commit()
+        ahead, messages, count = latest != mine, [], 0
+        if mine and ahead:
+            cmp = requests.get(f"{API}/compare/{mine}...{latest}", headers=HEADERS, timeout=20)
+            if cmp.ok:
+                data = cmp.json()
+                ahead = data.get("status") in ("ahead", "diverged")
+                count = data.get("ahead_by", 0)
+                messages = [c["commit"]["message"].splitlines()[0] for c in reversed(data.get("commits", []))]
+            else:  # this copy was built from a commit GitHub doesn't have: offer the latest anyway
+                count = 1
+                messages = [head["commit"]["message"].splitlines()[0]]
+        version = requests.get(f"https://raw.githubusercontent.com/{REPO}/{latest}/VERSION", headers=HEADERS, timeout=20)
+        info = {"kind": "commits", "checked_at": now, "latest_sha": latest, "ahead": ahead, "count": count,
+                "latest_version": version.text.strip()[:40] if version.ok else current_version(),
+                "messages": messages[:60], "error": None}
     except Exception as e:  # offline, rate-limited, etc. Keep the last good answer.
-        info = dict(info or {})
+        info = dict(info or {"kind": "commits"})
         info.update(checked_at=now, error=f"Couldn't check for updates: {e}")
     with db.connect() as conn:
         db.set_setting(conn, "update_check", json.dumps(info))
     return status()
 
 
-def _expected_sha256(info):
-    digest = info.get("digest") or ""
-    if digest.startswith("sha256:"):
-        return digest.split(":", 1)[1].lower()
-    if _is_trusted_url(info.get("sum_url")):
-        text = requests.get(info["sum_url"], headers=HEADERS, timeout=20).text
-        m = re.search(r"\b([0-9a-fA-F]{64})\b", text)
-        if m:
-            return m.group(1).lower()
-    raise RuntimeError("The release has no checksum, so it can't be verified. Not installing it.")
+# ---------------------------------------------------------------- is Budget Tool open?
+
+def pid_file():
+    return os.path.join(paths.DATA_DIR, "app.pid")
 
 
-def _is_trusted_url(url):
-    """Release downloads start at github.com/<this repo>/releases/download/ (GitHub then redirects to its CDN)."""
-    return bool(url) and url.startswith(f"https://github.com/{REPO}/releases/download/")
-
-
-def prepare():
-    """Download, verify and unpack the latest release. Returns the folder holding the new BudgetTool.exe."""
-    if not is_installed_app():
-        raise RuntimeError("Updates install into the built app. You're running from source, so use git pull instead.")
-    info = cached() or {}
-    if not status()["available"]:
-        raise RuntimeError("You already have the latest version.")
-    url = info.get("url")
-    if not _is_trusted_url(url):
-        raise RuntimeError("The download link isn't from this app's GitHub releases. Not installing it.")
-    expected = _expected_sha256(info)
-
-    work = tempfile.mkdtemp(prefix="BudgetTool-update-")
+def _alive(pid):
     try:
-        return _download_and_unpack(url, expected, work), work
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return code.value == 259  # STILL_ACTIVE
     except Exception:
-        shutil.rmtree(work, ignore_errors=True)
-        raise
+        return False
 
 
-def _download_and_unpack(url, expected, work):
-    pkg = os.path.join(work, ASSET)
-    sha = hashlib.sha256()
-    with requests.get(url, headers=HEADERS, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        with open(pkg, "wb") as f:
-            for chunk in r.iter_content(1024 * 256):
-                f.write(chunk)
-                sha.update(chunk)
-    if sha.hexdigest().lower() != expected:
-        raise RuntimeError("The download didn't match its published checksum, so it wasn't installed. Try again later.")
-
-    staging = os.path.join(work, "new")
-    with zipfile.ZipFile(pkg) as z:
-        for name in z.namelist():  # refuse anything that would land outside the staging folder
-            target = os.path.realpath(os.path.join(staging, name))
-            if not target.startswith(os.path.realpath(staging) + os.sep):
-                raise RuntimeError("The update package looks wrong. Not installing it.")
-        z.extractall(staging)
-    for dirpath, _dirs, files in os.walk(staging):
-        if "BudgetTool.exe" in files and os.path.isdir(os.path.join(dirpath, "_internal")):
-            return dirpath
-    raise RuntimeError("The update package doesn't contain BudgetTool.exe. Not installing it.")
-
-
-SWAP_SCRIPT = r"""
-param([int]$AppPid, [string]$Src, [string]$Dst, [string]$Work, [string]$Log)
-$ErrorActionPreference = 'Continue'
-function Note($m) { Add-Content -Path $Log -Value ("{0}  {1}" -f (Get-Date -Format s), $m) }
-Note "Update: waiting for Budget Tool (pid $AppPid) to close"
-try { Wait-Process -Id $AppPid -Timeout 60 -ErrorAction Stop } catch { }
-Start-Sleep -Milliseconds 800
-$backup = Join-Path $Work 'previous'
-robocopy $Dst $backup /MIR /R:2 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) { Note "Couldn't back up the current version (robocopy $LASTEXITCODE); update cancelled"; Start-Process (Join-Path $Dst 'BudgetTool.exe'); exit 1 }
-# /XF keeps the uninstaller that BudgetTool-Setup.exe puts in the folder (it isn't in the update package).
-robocopy $Src $Dst /MIR /XF unins*.exe unins*.dat /R:5 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-if ($LASTEXITCODE -ge 8) {
-  Note "Copying the new version failed (robocopy $LASTEXITCODE); restoring the previous version"
-  robocopy $backup $Dst /MIR /XF unins*.exe unins*.dat /R:5 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
-} else {
-  Note "Update installed"
-  # Installed with BudgetTool-Setup.exe? Show the new version number in Windows' Installed apps list too.
-  $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{CCEBBAD2-57A2-4B54-92CB-7C7F31A7F483}_is1'
-  $verFile = Join-Path $Dst '_internal\VERSION'
-  if ((Test-Path $key) -and (Test-Path $verFile)) {
-    Set-ItemProperty -Path $key -Name DisplayVersion -Value (Get-Content $verFile -Raw).Trim() -ErrorAction SilentlyContinue
-  }
-}
-Start-Process (Join-Path $Dst 'BudgetTool.exe')
-Start-Sleep -Seconds 2
-Remove-Item -Recurse -Force $Work -ErrorAction SilentlyContinue
-"""
-
-
-def launch_swap(new_dir, work):
-    """Start the helper that replaces the program folder once this app has exited, then relaunches it."""
-    dst = install_dir()
-    if not os.path.isfile(os.path.join(dst, "BudgetTool.exe")) or not os.path.isdir(os.path.join(dst, "_internal")):
-        raise RuntimeError(f"Unexpected install folder ({dst}); not updating it automatically.")
-    data, app_dir = os.path.normcase(os.path.realpath(DATA_DIR)), os.path.normcase(os.path.realpath(dst))
-    if data == app_dir or data.startswith(app_dir + os.sep):
-        # An update replaces everything in the app folder, which would delete your data.
-        raise RuntimeError(f"Your data folder ({DATA_DIR}) is inside the app folder, so updating would erase it. "
-                           "Run BudgetTool-Setup.exe and pick a data folder outside the app folder, then update.")
-    script = os.path.join(work, "swap.ps1")
-    with open(script, "w", encoding="utf-8-sig") as f:
-        f.write(SWAP_SCRIPT)
-    args = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", script,
-            "-AppPid", str(os.getpid()), "-Src", new_dir, "-Dst", dst, "-Work", work,
-            "-Log", os.path.join(DATA_DIR, "update.log")]
-    # CREATE_NO_WINDOW gives PowerShell a hidden console (it won't run fully detached) | CREATE_NEW_PROCESS_GROUP
-    flags = 0x08000000 | 0x00000200
+def app_running():
     try:
-        # Break away from any job object the app was started in, so the helper outlives the app.
-        subprocess.Popen(args, creationflags=flags | 0x01000000, close_fds=True)  # CREATE_BREAKAWAY_FROM_JOB
+        with open(pid_file(), encoding="utf-8") as f:
+            pid = int(f.read().strip() or 0)
+    except (OSError, ValueError):
+        return False
+    return pid != os.getpid() and _alive(pid)
+
+
+def wait_for_exit(pid=None, seconds=60):
+    end = time.time() + seconds
+    while time.time() < end:
+        if not (_alive(pid) if pid else app_running()):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def launch_updater():
+    """From inside Budget Tool: start the updater, which waits for this app to close, installs, and reopens it."""
+    exe = os.path.join(paths.APP_DIR, "Update Budget Tool.exe")
+    if not os.path.isfile(exe):
+        raise RuntimeError("The updater (Update Budget Tool.exe) is missing. Install Budget Tool into this folder again.")
+    subprocess.Popen([exe, "--auto", "--relaunch", "--pid", str(os.getpid())], cwd=paths.APP_DIR, close_fds=True)
+
+
+# ---------------------------------------------------------------- installing
+
+def _log(msg):
+    try:
+        with open(os.path.join(paths.DATA_DIR, "update.log"), "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}\n")
     except OSError:
-        subprocess.Popen(args, creationflags=flags, close_fds=True)
+        pass
+
+
+def _download(sha, into):
+    """This commit's code from GitHub, unpacked safely into `into`. Returns the folder holding the code."""
+    if not SHA_RE.match(sha or ""):
+        raise RuntimeError("That isn't a valid commit id.")
+    url = f"https://codeload.github.com/{REPO}/zip/{sha}"  # fixed address; only the commit id varies
+    resp = requests.get(url, headers=HEADERS, timeout=60, stream=True)
+    resp.raise_for_status()
+    buf = io.BytesIO()
+    for chunk in resp.iter_content(1 << 16):
+        buf.write(chunk)
+        if buf.tell() > MAX_DOWNLOAD:
+            raise RuntimeError("The download is far bigger than expected. Not installing it.")
+    os.makedirs(into, exist_ok=True)
+    root = os.path.realpath(into)
+    with zipfile.ZipFile(buf) as z:
+        for name in z.namelist():
+            target = os.path.realpath(os.path.join(into, name))
+            if not target.startswith(root + os.sep):
+                raise RuntimeError("The download looks wrong (a file points outside its folder). Not installing it.")
+        z.extractall(into)
+    for entry in os.listdir(into):
+        folder = os.path.join(into, entry)
+        if os.path.isdir(folder) and os.path.isfile(os.path.join(folder, "app.py")):
+            return folder
+    raise RuntimeError("The download doesn't contain Budget Tool. Not installing it.")
+
+
+def copy_app_files(src, dst, sha=None):
+    """Only Budget Tool's own files: top-level .py, VERSION, requirements.txt, templates/, static/."""
+    os.makedirs(dst)
+    for name in os.listdir(src):
+        path = os.path.join(src, name)
+        if os.path.isfile(path) and (name.endswith(".py") or name in APP_FILES):
+            shutil.copy2(path, os.path.join(dst, name))
+    for d in APP_DIRS:
+        if os.path.isdir(os.path.join(src, d)):
+            shutil.copytree(os.path.join(src, d), os.path.join(dst, d), ignore=shutil.ignore_patterns("__pycache__"))
+    if sha:
+        with open(os.path.join(dst, "COMMIT"), "w", encoding="utf-8") as f:
+            f.write(sha + "\n")
+
+
+def _verify(folder):
+    missing = [m for m in MUST_HAVE if not os.path.exists(os.path.join(folder, m))]
+    if missing:
+        raise RuntimeError("The update is missing " + ", ".join(missing) + ". Not installing it.")
+    for name in os.listdir(folder):
+        if name.endswith(".py"):
+            try:
+                py_compile.compile(os.path.join(folder, name), doraise=True,
+                                   cfile=os.path.join(folder, "__pycache__", name + "c"))
+            except py_compile.PyCompileError as e:
+                raise RuntimeError(f"The update has a problem in {name}, so it wasn't installed: {e.msg.strip()[:300]}")
+
+
+def _read(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return "\n".join(line.strip() for line in f if line.strip() and not line.strip().startswith("#"))
+    except OSError:
+        return ""
+
+
+def _install_libraries(requirements):
+    python = os.path.join(paths.RUNTIME_DIR, "python.exe")
+    r = subprocess.run([python, "-m", "pip", "install", "--disable-pip-version-check", "--no-warn-script-location",
+                        "-q", "-r", requirements], capture_output=True, text=True, creationflags=CREATE_NO_WINDOW,
+                       timeout=900)
+    if r.returncode != 0:
+        raise RuntimeError("Couldn't install the libraries this update needs:\n" + (r.stderr or r.stdout)[-600:])
+
+
+def install(sha, progress=lambda msg: None):
+    """Download, check and install commit `sha`. Raises with a friendly message if anything is wrong; the
+    installed app is only replaced at the very end, after every check passed."""
+    if not can_install():
+        raise RuntimeError("This copy runs from source, so it doesn't update itself. Use git pull instead.")
+    if app_running():
+        raise RuntimeError("Close Budget Tool first, then click Update now again.")
+    app_dir = os.path.join(paths.APP_DIR, "app")
+    work = os.path.join(paths.APP_DIR, ".update")  # same drive as app\, so the final swap is a quick rename
+    shutil.rmtree(work, ignore_errors=True)
+    os.makedirs(work)
+    try:
+        progress("Downloading the update from GitHub…")
+        src = _download(sha, os.path.join(work, "download"))
+        progress("Checking it…")
+        new_app = os.path.join(work, "app")
+        copy_app_files(src, new_app, sha)
+        _verify(new_app)
+        if _read(os.path.join(new_app, "requirements.txt")) != _read(os.path.join(app_dir, "requirements.txt")):
+            progress("Installing the libraries it needs (this can take a minute)…")
+            _install_libraries(os.path.join(new_app, "requirements.txt"))
+        progress("Installing…")
+        previous = os.path.join(paths.APP_DIR, "app.previous")
+        shutil.rmtree(previous, ignore_errors=True)
+        os.rename(app_dir, previous)
+        try:
+            os.rename(new_app, app_dir)
+        except OSError:
+            os.rename(previous, app_dir)  # put the old version back
+            raise
+        _log(f"Updated to {sha} ({version_of(app_dir)})")
+    except Exception as e:
+        _log(f"Update to {sha} failed: {e}")
+        raise
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def roll_back():
+    """Put the previous version (app.previous) back."""
+    app_dir = os.path.join(paths.APP_DIR, "app")
+    previous = os.path.join(paths.APP_DIR, "app.previous")
+    if not os.path.isdir(previous):
+        raise RuntimeError("There's no previous version to go back to.")
+    if app_running():
+        raise RuntimeError("Close Budget Tool first.")
+    broken = os.path.join(paths.APP_DIR, "app.rolled-back")
+    shutil.rmtree(broken, ignore_errors=True)
+    os.rename(app_dir, broken)
+    os.rename(previous, app_dir)
+    shutil.rmtree(broken, ignore_errors=True)
+    _log("Rolled back to the previous version")

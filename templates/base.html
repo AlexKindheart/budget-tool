@@ -28,10 +28,10 @@
   <main class="{% block main_class %}{% endblock %}">
     {% if update.available and request.endpoint != 'settings' %}
       <div class="flash update">
-        <span>Budget Tool <strong>{{ update.latest }}</strong> is available (you have {{ update.current }}).</span>
+        <span>A Budget Tool update is available: <strong>{{ update.latest }}</strong> (you have {{ update.current }}).</span>
         <a href="{{ url_for('settings') }}#updates">What's new</a>
         {% if update.can_install %}
-        <form method="post" action="{{ url_for('update_install') }}" onsubmit="return confirm('Install the update now? Budget Tool will close and reopen.')">
+        <form method="post" action="{{ url_for('update_install') }}" onsubmit="return confirm('Install the update now? Budget Tool will close, update, and open again.')">
           <input type="hidden" name="csrf" value="{{ csrf_token() }}">
           <button class="btn primary small">Update now</button>
         </form>{% endif %}

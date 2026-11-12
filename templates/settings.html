@@ -39,30 +39,29 @@
 
 <section class="card" id="updates">
   <h2>Updates</h2>
-  <p>You have version <strong>{{ update.current }}</strong>.
-    {% if update.available %}Version <strong>{{ update.latest }}</strong> is available.
-    {% elif update.latest %}That's the latest.{% endif %}
-    <span class="muted small">Last checked {{ update.checked_at|ago }}. It checks automatically every few hours while open.</span></p>
+  <p>You have <strong>{{ update.current }}</strong>.
+    {% if update.available %}<strong>{{ update.latest }}</strong> is available{% if update.count > 1 %} ({{ update.count }} changes){% endif %}.
+    {% elif update.latest and not update.from_source %}That's the latest.{% endif %}
+    {% if update.checked_at %}<span class="muted small">Last checked {{ update.checked_at|ago }}. It checks every few hours while open.</span>{% endif %}</p>
   {% if update.error %}<p class="muted small">{{ update.error }}</p>{% endif %}
   {% if update.available and update.notes %}
-    <details open><summary class="small">What's new in {{ update.latest }}</summary><pre class="notes">{{ update.notes }}</pre></details>
+    <details open><summary class="small">What's new</summary><pre class="notes">{{ update.notes }}</pre></details>
   {% endif %}
   <div class="actions">
     <form method="post" action="{{ url_for('update_check') }}">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ url_for('settings') }}#updates">
       <button class="btn">Check now</button>
     </form>
-    {% if update.available %}
-      {% if update.can_install %}
-      <form method="post" action="{{ url_for('update_install') }}" onsubmit="return confirm('Install the update now? Budget Tool will close and reopen.')">
-        <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ url_for('settings') }}#updates">
-        <button class="btn primary">Install {{ update.latest }}</button>
+    {% if update.available and update.can_install %}
+      <form method="post" action="{{ url_for('update_install') }}" onsubmit="return confirm('Install the update now? Budget Tool will close, update, and open again.')">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button class="btn primary">Update now</button>
       </form>
-      {% else %}<span class="muted small">You're running from source: use <code>git pull</code> to update.</span>{% endif %}
     {% endif %}
   </div>
-  <p class="muted small">Updates come only from this app's GitHub releases, are checked against their published SHA-256
-     checksum before installing, and never touch your data.</p>
+  <p class="muted small">{% if update.from_source %}You're running from source: use <code>git pull</code> to update.
+    {% else %}Updates come straight from the newest changes published for Budget Tool. You can also run
+    <strong>Update Budget Tool</strong> from the Budget Tool folder. Updates only replace the program, never your data.{% endif %}</p>
 </section>
 
 <section class="card">

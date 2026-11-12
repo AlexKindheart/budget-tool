@@ -1,7 +1,10 @@
 {% extends "base.html" %}
 {% block title %}Categories{% endblock %}
 {% block content %}
-<h1>Categories</h1>
+<div class="bar">
+  <h1>Categories</h1>
+  <a class="btn" href="{{ url_for('year_plan', year=next_year) }}">Plan changes for {{ next_year }}</a>
+</div>
 
 <section class="card">
   <p class="muted small"><strong>Income</strong> and <strong>Expense</strong> categories are budgeted and reported.
@@ -18,7 +21,10 @@
       <tr class="section"><td colspan="5">{{ title }}</td></tr>
       {% for c in cats if c.kind == kind %}
         <tr>
-          <td><input form="cat-form" name="name_{{ c.id }}" value="{{ c.name }}" required></td>
+          <td><input form="cat-form" name="name_{{ c.id }}" value="{{ c.name }}" required>
+            {% if c.active_from or c.active_until %}<span class="pill" title="This category is only used in these years">
+              {%- if c.active_from and c.active_until %}{{ c.active_from }}–{{ c.active_until }}{% elif c.active_from %}from {{ c.active_from }}{% else %}until {{ c.active_until }}{% endif -%}
+            </span>{% endif %}</td>
           <td><select form="cat-form" name="kind_{{ c.id }}">
             {% for k, l in [('income', 'Income'), ('expense', 'Expense'), ('transfer', 'Non-budget')] %}<option value="{{ k }}" {{ 'selected' if c.kind == k }}>{{ l }}</option>{% endfor %}
           </select></td>

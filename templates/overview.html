@@ -7,6 +7,18 @@
   {%- if p.period == 'month' -%}{{ url_for('register', month=p.selected, category=category) }}
   {%- else -%}{{ url_for('register', month='range', category=category, **{'from': p.start.isoformat(), 'to': p.end.isoformat()}) }}{%- endif -%}
 {%- endmacro %}
+{% if plan_year %}
+<div class="flash update plan-prompt">
+  <span><strong>{{ plan_year }} is almost here.</strong> Want to change your categories for {{ plan_year }} and later?
+    {{ plan_year - 1 }} and earlier won't change.</span>
+  <a class="btn primary small" href="{{ url_for('year_plan', year=plan_year) }}">Plan {{ plan_year }}</a>
+  <form method="post" action="{{ url_for('year_plan_later') }}" class="inline">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="year" value="{{ plan_year }}">
+    <button class="btn small ghost">Not now</button>
+    <button class="btn small ghost" name="never" value="1">No changes for {{ plan_year }}</button>
+  </form>
+</div>
+{% endif %}
 <div class="bar">
   <div class="periodnav">
     <div class="seg" role="group" aria-label="Time span">
@@ -40,11 +52,23 @@
   </div>
 </div>
 
-{% if not accounts %}
-  <section class="card empty">
-    <h2>Welcome!</h2>
-    <p>Connect your bank or add accounts on the <a href="{{ url_for('accounts') }}">Accounts</a> screen,
-       then set your monthly amounts on the <a href="{{ url_for('budget') }}">Budget</a> screen.</p>
+{% if steps %}
+  <section class="card getting-started">
+    <h2>Get started</h2>
+    <ol class="steps">
+      {% for text, done, button, link, is_next in steps %}
+        <li class="{{ 'done' if done }}"><span class="tick">{{ '✓' if done else loop.index }}</span>
+          <span>{{ text }}</span>{% if not done %}<a class="btn small {{ 'primary' if is_next }}" href="{{ link }}">{{ button }}</a>{% endif %}</li>
+      {% endfor %}
+    </ol>
+  </section>
+{% endif %}
+{% if todo %}
+  <section class="card todo">
+    <h2>To do</h2>
+    {% for text, button, link, style in todo %}
+      <div class="row todo-item {{ style }}"><span>{{ text }}</span><a class="btn small primary" href="{{ link }}">{{ button }}</a></div>
+    {% endfor %}
   </section>
 {% endif %}
 

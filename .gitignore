@@ -3,3 +3,6 @@ build/
 dist/
 *.spec
 release/
+data/
+.cache/
+launcher/icon-preview.png

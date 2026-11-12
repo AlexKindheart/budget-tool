@@ -1,30 +1,48 @@
-"""Where the app's files live, both when run from source and as a built .exe."""
+r"""Where Budget Tool keeps its files. It's portable: the program and your data live together in one folder,
+
+    BudgetTool\
+      BudgetTool.exe            starts Budget Tool
+      Update Budget Tool.exe    the updater
+      runtime\                  a private copy of Python and the libraries Budget Tool uses
+      app\                      Budget Tool's code (what updates replace)
+      data\                     your budget, settings, bank connections (never touched by updates)
+
+so the whole folder can be copied to a USB drive and run on any Windows PC. Nothing is written to the registry
+or to AppData.
+"""
 import os
 import sys
 
-# Read-only app files (templates, static). PyInstaller unpacks these to sys._MEIPASS.
-RESOURCE_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+FROZEN = getattr(sys, "frozen", False)
 
-DEFAULT_DATA_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "BudgetTool")
-REGISTRY_KEY = r"Software\BudgetTool"  # HKEY_CURRENT_USER; BudgetTool-Setup.exe writes DataDir here
+# Where the code is: the app\ folder when installed, or the source folder when run with `py budget_tool.py`.
+SOURCE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Read-only app files (templates, static) sit next to the code (an older PyInstaller build unpacked them to _MEIPASS).
+RESOURCE_DIR = getattr(sys, "_MEIPASS", SOURCE_DIR)
+
+# Installed: code in <folder>\app, with the private Python in <folder>\runtime.
+_parent = os.path.dirname(SOURCE_DIR)
+INSTALLED = (os.path.basename(SOURCE_DIR).lower() == "app"
+             and os.path.isfile(os.path.join(_parent, "runtime", "python.exe")))
+
+# The Budget Tool folder (the one holding BudgetTool.exe), or the source folder when run from source.
+APP_DIR = _parent if INSTALLED else (os.path.dirname(os.path.abspath(sys.executable)) if FROZEN else SOURCE_DIR)
+RUNTIME_DIR = os.path.join(APP_DIR, "runtime")
+
+# Your data, next to the program. BUDGETTOOL_DATA overrides it (developers / tests).
+DATA_DIR = os.environ.get("BUDGETTOOL_DATA") or os.path.join(APP_DIR, "data")
+
+# Where versions before the portable one kept data (only read, to offer copying it in on first start).
+OLD_DATA_DIR = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "BudgetTool")
 
 
-def _chosen_data_dir():
-    """The data folder picked in the installer (saved in the registry), if any."""
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, REGISTRY_KEY) as key:
-            value, _ = winreg.QueryValueEx(key, "DataDir")
-        return os.path.expandvars(str(value)).strip() or None
-    except (ImportError, OSError):
-        return None
-
-
-def _cant_reach(folder, err):
-    """The chosen data folder is missing (e.g. an unplugged drive): say so instead of starting empty."""
-    msg = (f"Budget Tool can't open its data folder:\n\n{folder}\n\n({err})\n\n"
-           "If it's on a USB or network drive, connect it and open Budget Tool again. "
-           "To use a different folder, run BudgetTool-Setup.exe again and pick it there.")
+def _cant_write(folder, err):
+    msg = (f"Budget Tool keeps your data in a \"data\" folder next to the program, but it can't write here:\n\n"
+           f"{folder}\n\n({err})\n\n"
+           "If this is a USB drive, check it's plugged in, not full, and not write-protected.\n"
+           "Programs inside \"Program Files\" can't write next to themselves: move the whole BudgetTool folder "
+           "somewhere like Documents, the Desktop or a USB drive, and open it from there.")
     try:
         import ctypes
         ctypes.windll.user32.MessageBoxW(None, msg, "Budget Tool", 0x10)
@@ -33,19 +51,31 @@ def _cant_reach(folder, err):
     sys.exit(1)
 
 
-# Your data (database with bank tokens), kept outside the app folder so it survives updates.
-# Where: BUDGETTOOL_DATA if set (developers/tests) > the folder chosen in the installer > %APPDATA%\BudgetTool.
-DATA_DIR = os.environ.get("BUDGETTOOL_DATA") or _chosen_data_dir() or DEFAULT_DATA_DIR
-if DATA_DIR == DEFAULT_DATA_DIR or os.environ.get("BUDGETTOOL_DATA"):
+try:
     os.makedirs(DATA_DIR, exist_ok=True)
-else:
-    # A chosen folder: create it only if the drive / parent folder is there, so an unplugged drive
-    # doesn't quietly start you off with an empty budget.
-    parent = os.path.dirname(os.path.abspath(DATA_DIR))
-    if not os.path.isdir(DATA_DIR):
-        if not os.path.isdir(parent):
-            _cant_reach(DATA_DIR, "the folder or drive it's on isn't there")
-        try:
-            os.makedirs(DATA_DIR, exist_ok=True)
-        except OSError as e:
-            _cant_reach(DATA_DIR, e.strerror or e)
+    _probe = os.path.join(DATA_DIR, ".write-test")
+    with open(_probe, "w") as _f:
+        _f.write("ok")
+    os.remove(_probe)
+except OSError as _e:
+    _cant_write(DATA_DIR, _e.strerror or _e)
+
+
+def old_data_dirs():
+    """Folders where an earlier (installed) version kept its data: the folder picked in the old installer
+    (from the registry, read only) and %APPDATA%\\BudgetTool. Only ones that actually have a database."""
+    found = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\BudgetTool") as key:
+            found.append(os.path.expandvars(str(winreg.QueryValueEx(key, "DataDir")[0])).strip())
+    except (ImportError, OSError):
+        pass
+    found.append(OLD_DATA_DIR)
+    here = os.path.normcase(os.path.realpath(DATA_DIR))
+    out = []
+    for d in found:
+        if d and os.path.isfile(os.path.join(d, "budget.db")) and os.path.normcase(os.path.realpath(d)) != here:
+            if d not in out:
+                out.append(d)
+    return out

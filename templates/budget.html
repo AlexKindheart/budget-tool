@@ -9,6 +9,12 @@
     <a class="btn ghost" href="?year={{ year + 1 }}">&rarr;</a>
   </div>
   <div class="actions">
+    <form method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="year" value="{{ year }}">
+      <input type="hidden" name="action" value="from_spending">
+      <button class="btn ghost" title="Fills empty months with what you actually spent (or earned) per month, on average, over the last 12 months">Fill from my spending</button>
+    </form>
     <form method="post" onsubmit="return confirm('Copy every amount from {{ year - 1 }} into {{ year }}? Amounts already set for {{ year }} are replaced.')">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <input type="hidden" name="year" value="{{ year }}">

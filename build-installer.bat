@@ -1,6 +1,6 @@
 @echo off
 rem Builds release\BudgetTool-Setup.exe, an installer you can send to someone else.
-rem Needs Python and Inno Setup 6 (free: winget install JRSoftware.InnoSetup).
+rem Needs Python 3.11 and Inno Setup 6 (free: winget install JRSoftware.InnoSetup).
 cd /d "%~dp0"
 
 set "ISCC=%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"
@@ -12,20 +12,11 @@ if not exist "%ISCC%" (
 )
 set /p VER=<VERSION
 
-echo Installing build tools...
-py -m pip install -q -r requirements.txt || goto :fail
-
-echo Building Budget Tool %VER% (takes a minute)...
-py -m PyInstaller --noconfirm --clean --windowed --name BudgetTool ^
-  --add-data "templates;templates" --add-data "static;static" --add-data "VERSION;." ^
-  budget_tool.py || goto :fail
+py -3.11 build.py --stage-only || goto :fail
 
 echo Packing the installer...
 "%ISCC%" /Q /DAppVersion=%VER% installer.iss || goto :fail
-
-rmdir /s /q build
 rmdir /s /q dist
-del /q BudgetTool.spec 2>nul
 
 echo.
 echo Done! Send this file:  %~dp0release\BudgetTool-Setup.exe

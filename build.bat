@@ -1,43 +1,25 @@
 @echo off
-rem Builds Budget Tool, installs it to %LOCALAPPDATA%\Programs\BudgetTool,
-rem and adds Desktop + Start Menu shortcuts. Your data (in %APPDATA%\BudgetTool) is not touched.
+rem Builds Budget Tool into a portable folder: %LOCALAPPDATA%\Programs\BudgetTool, or the folder you pass
+rem (e.g.  build.bat E:\BudgetTool  for a USB drive). Your "data" folder there is never touched.
+rem On this PC it also adds Desktop + Start Menu shortcuts. Needs Python 3.11 (py -3.11).
 cd /d "%~dp0"
 set "INSTALL=%LOCALAPPDATA%\Programs\BudgetTool"
+if not "%~1"=="" set "INSTALL=%~1"
 
-tasklist /FI "IMAGENAME eq BudgetTool.exe" | find /I "BudgetTool.exe" >nul && (
-  echo Budget Tool is open. Close it first, then run this again.
-  pause
-  exit /b 1
-)
+py -3.11 build.py "%INSTALL%" || goto :fail
 
-echo Installing build tools...
-py -m pip install -q -r requirements.txt || goto :fail
-
-echo Building Budget Tool (takes a minute)...
-py -m PyInstaller --noconfirm --clean --windowed --name BudgetTool ^
-  --add-data "templates;templates" --add-data "static;static" --add-data "VERSION;." ^
-  budget_tool.py || goto :fail
-
-echo Installing to %INSTALL%...
-if exist "%INSTALL%" rmdir /s /q "%INSTALL%"
-robocopy "dist\BudgetTool" "%INSTALL%" /E /NFL /NDL /NJH /NJS /NP >nul
-if errorlevel 8 goto :fail
-
-rem Remove PyInstaller's work folders so there's no half-built exe lying around.
-rmdir /s /q build
-rmdir /s /q dist
-del /q BudgetTool.spec 2>nul
-
-echo Creating shortcuts...
+echo Creating shortcuts on this PC...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$exe = Join-Path $env:LOCALAPPDATA 'Programs\BudgetTool\BudgetTool.exe';" ^
+  "$exe = Join-Path $env:INSTALL 'BudgetTool.exe';" ^
   "$ws = New-Object -ComObject WScript.Shell;" ^
   "foreach ($dir in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Programs'))) {" ^
   "  $s = $ws.CreateShortcut((Join-Path $dir 'Budget Tool.lnk')); $s.TargetPath = $exe;" ^
   "  $s.WorkingDirectory = Split-Path $exe; $s.Description = 'Budget Tool'; $s.Save() }"
 
 echo.
-echo Done! Open "Budget Tool" from your Desktop or Start Menu.
+echo Done! Budget Tool is in %INSTALL%
+echo That folder is portable: copy the whole folder to a USB drive and run BudgetTool.exe from there.
+echo To update later, run "Update Budget Tool" in that folder (or use the banner inside Budget Tool).
 pause
 exit /b 0
 

@@ -87,14 +87,18 @@ document.querySelectorAll('[data-catfilter]').forEach((form) => {
   if (!sel || !pay || !dep) return;
   const num = (i) => parseFloat((i.value || '').replace(/[$,]/g, '')) || 0;
   const sideOf = () => { const a = num(dep) - num(pay); return a > 0 ? 'income' : a < 0 ? 'expense' : ''; };
-  const original = sel.value, originalSide = sideOf();  // an older transaction keeps the category it already has
+  const dateIn = form.querySelector('input[name="date"]');
+  const yearOf = () => parseInt((dateIn && dateIn.value || '').slice(0, 4), 10) || 0;
+  // Categories can be limited to certain years (planned for a new year): only offer ones used in the date's year.
+  const inYear = (o, y) => !y || ((!o.dataset.from || +o.dataset.from <= y) && (!o.dataset.until || +o.dataset.until >= y));
+  const original = sel.value, originalSide = sideOf(), originalYear = yearOf();  // an older transaction keeps its category
   function apply() {
-    const side = sideOf();
+    const side = sideOf(), year = yearOf();
     sel.querySelectorAll('optgroup').forEach((g) => {
       let any = false;
       g.querySelectorAll('option').forEach((o) => {
-        const show = !side || g.dataset.kind === side || g.dataset.kind === 'transfer'
-          || (o.value === original && side === originalSide);
+        const keep = o.value === original && side === originalSide && year === originalYear;
+        const show = keep || ((!side || g.dataset.kind === side || g.dataset.kind === 'transfer') && inYear(o, year));
         o.hidden = !show; o.disabled = !show;
         any = any || show;
       });
@@ -102,7 +106,8 @@ document.querySelectorAll('[data-catfilter]').forEach((form) => {
     });
     if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) sel.value = '';  // no longer fits
   }
-  [pay, dep].forEach((i) => i.addEventListener('input', apply));
+  [pay, dep, dateIn].forEach((i) => i && i.addEventListener('input', apply));
+  if (dateIn) dateIn.addEventListener('change', apply);
   apply();
 });
 
@@ -139,3 +144,21 @@ document.querySelectorAll('[data-catfilter]').forEach((form) => {
     });
   });
 })();
+
+// Plan next year: unticking a category shows what will happen to its later transactions and budget.
+document.querySelectorAll('[data-plan-row]').forEach((row) => {
+  const box = row.querySelector('input[type="checkbox"]');
+  const warn = () => row.querySelectorAll('[data-warn-off]').forEach((w) => { w.hidden = box.checked; });
+  box.addEventListener('change', () => { row.classList.toggle('retired', !box.checked); warn(); });
+});
+
+// Register: "Groceries?" suggestion buttons pick that category (and save it) in one click.
+document.addEventListener('click', (e) => {
+  const chip = e.target.closest && e.target.closest('[data-suggest]');
+  if (!chip) return;
+  const sel = chip.form && chip.form.querySelector('select[name="category_id"]');
+  if (!sel) return;
+  sel.value = chip.dataset.suggest;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  chip.remove();
+});

@@ -310,3 +310,23 @@ section.card.scroll:has(table.yearly) { padding-left: .8rem; padding-right: .8re
 
 /* a page title that sits directly above a card */
 main > h1 { margin-bottom: 1.2rem; }
+
+/* ---- planning categories for a new year ---- */
+.plan-prompt .btn { flex: none; }
+table.plan input[name^="name_"], table.plan input[name^="new_name_"] { width: 100%; max-width: 22rem; }
+table.plan tr.retired td input[name^="name_"], table.plan tr.retired select { opacity: .45; text-decoration: line-through; }
+table.plan [data-warn-off]:not([hidden]) { color: var(--warn); display: block; }
+
+/* ---- getting started, to do, suggestions ---- */
+.steps { list-style: none; margin: 0; padding: 0; }
+.steps li { display: flex; align-items: center; gap: .8rem; padding: .5rem 0; border-bottom: 1px solid var(--line-soft); }
+.steps li:last-child { border-bottom: 0; }
+.steps li span:nth-child(2) { flex: 1; }
+.steps .tick { display: grid; place-items: center; width: 1.7rem; height: 1.7rem; border-radius: 50%; flex: none;
+  font: 600 .9rem var(--heading-font); border: 2px solid var(--sun); color: var(--sun); }
+.steps li.done { color: var(--muted); }
+.steps li.done .tick { background: var(--sun); color: var(--on-accent); }
+.todo-item.warn span { color: var(--warn); }
+.chip { margin-left: .35rem; padding: .15rem .55rem; border-radius: var(--radius); border: 1px dashed var(--sun); background: transparent;
+  color: var(--sun); font-size: .82rem; cursor: pointer; white-space: nowrap; }
+.chip:hover { background: var(--sun); color: var(--on-accent); border-style: solid; }

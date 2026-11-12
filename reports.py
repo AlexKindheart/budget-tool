@@ -30,6 +30,13 @@ def categories(conn):
     ).fetchall()
 
 
+def categories_in_year(conn, year):
+    """Categories used in that year (a category can be limited to certain years, e.g. renamed for a new year)."""
+    return [c for c in categories(conn)
+            if (c["active_from"] is None or c["active_from"] <= year)
+            and (c["active_until"] is None or c["active_until"] >= year)]
+
+
 def actuals(conn, start, end):
     """{category_id: actual} for start <= date <= end (dates as date objects)."""
     rows = conn.execute(

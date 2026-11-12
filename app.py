@@ -148,20 +148,48 @@ def all_categories(conn):
     return reports.categories(conn)
 
 
-def check_category(conn, category_id, amount, current=None):
+def check_category(conn, category_id, amount, current=None, when=None):
     """Deposits take income categories, payments take expense categories; non-budget categories
-    ([Transfer], [Beginning Balance]...) and Uncategorized fit either. A category the transaction
-    already has is left alone, so editing the memo of an older transaction still works."""
-    if category_id is None or not amount or category_id == current:
+    ([Transfer], [Beginning Balance]...) and Uncategorized fit either. The category must be one that's used in
+    the transaction's year (`when`, a 'YYYY-MM-DD' date). A category the transaction already has is left alone,
+    so editing the memo of an older transaction still works."""
+    if category_id is None or category_id == current:
         return
-    row = conn.execute("SELECT name, kind FROM categories WHERE id = ?", (category_id,)).fetchone()
+    row = conn.execute("SELECT * FROM categories WHERE id = ?", (category_id,)).fetchone()
     if not row:
         raise ValueError("That category doesn't exist anymore.")
+    if when and not db.active_in(row, int(str(when)[:4])):
+        raise ValueError(f"\"{row['name']}\" isn't used in {str(when)[:4]}. Pick one of that year's categories.")
+    if not amount:
+        return
     want = "income" if amount > 0 else "expense"
     if row["kind"] not in (want, "transfer"):
         raise ValueError(f"\"{row['name']}\" is an {row['kind']} category, but this is a "
                          f"{'deposit' if amount > 0 else 'payment'}. Pick an {want} category "
                          "or a non-budget one like [Transfer].")
+
+
+def category_suggestions(conn, txs):
+    """{transaction id: (category id, name)}: the category you picked most recently for the same payee, if it
+    still fits (income vs expense, and used in that transaction's year). Shown as a one-click button; nothing is
+    categorized automatically."""
+    if not txs:
+        return {}
+    cats = {c["id"]: c for c in conn.execute("SELECT * FROM categories")}
+    last = {}
+    for r in conn.execute("""SELECT lower(trim(payee)) AS p, amount > 0 AS dep, category_id FROM transactions
+                             WHERE category_id IS NOT NULL AND is_opening = 0 AND payee IS NOT NULL AND payee != ''
+                             ORDER BY date DESC, id DESC"""):
+        last.setdefault((r["p"], r["dep"]), []).append(r["category_id"])
+    out = {}
+    for t in txs:
+        year, want = int(t["date"][:4]), ("income" if t["amount"] > 0 else "expense")
+        for cid in last.get(((t["payee"] or "").strip().lower(), 1 if t["amount"] > 0 else 0), []):
+            c = cats.get(cid)
+            if c and db.active_in(c, year) and c["kind"] in (want, "transfer"):
+                out[t["id"]] = (cid, c["name"])
+                break
+    return out
 
 
 def all_accounts(conn, include_closed=True):
@@ -254,6 +282,45 @@ def overview_period(args, earliest):
     return p
 
 
+def setup_steps(conn):
+    """First-run checklist on the Overview (hidden once all three are done)."""
+    steps = [
+        ("Add your Plaid keys, so Budget Tool can read your bank", plaid.configured(), "Settings", url_for("settings")),
+        ("Connect your bank (or add an account by hand)",
+         conn.execute("SELECT 1 FROM accounts").fetchone() is not None, "Accounts", url_for("accounts")),
+        ("Set your monthly budget (one click fills it from your spending)",
+         conn.execute("SELECT 1 FROM budgets").fetchone() is not None, "Budget", url_for("budget")),
+    ]
+    if all(done for _, done, _, _ in steps):
+        return None
+    first = next(i for i, st in enumerate(steps) if not st[1])
+    return [(text, done, button, link, i == first) for i, (text, done, button, link) in enumerate(steps)]
+
+
+def todo_items(conn):
+    """What needs you right now, most important first: [(message, button, link, style)]. Empty = nothing to do."""
+    items = []
+    for it in conn.execute("SELECT * FROM items WHERE error IS NOT NULL AND error != ''"):
+        items.append((f"{it['institution_name'] or 'Your bank'} needs you to sign in again before it can sync.",
+                      "Reconnect", url_for("accounts"), "warn"))
+    n = conn.execute("SELECT COUNT(*) FROM transactions WHERE category_id IS NULL AND is_opening = 0").fetchone()[0]
+    if n:
+        items.append((f"{n} transaction{'' if n == 1 else 's'} need{'s' if n == 1 else ''} a category.", "Sort them",
+                      url_for("register", month="all", category="none"), "todo"))
+    balances = account_balances(conn)
+    for a in conn.execute("SELECT * FROM accounts WHERE closed = 0 AND plaid_account_id IS NOT NULL"):
+        bank = plaid.bank_balance_in_register_sign(a)
+        posted = balances.get(a["id"], (0, 0))[1]
+        if bank is not None and abs(bank - posted) > 0.005:
+            items.append((f"{a['name']} doesn't match your bank (off by {money(bank - posted)}).", "Fix it",
+                          url_for("accounts"), "warn"))
+    month = reports.month_key(date.today())
+    if (conn.execute("SELECT 1 FROM budgets").fetchone()
+            and not conn.execute("SELECT 1 FROM budgets WHERE month = ?", (month,)).fetchone()):
+        items.append((f"There's no budget for {date.today():%B} yet.", "Set it", url_for("budget", year=date.today().year), "todo"))
+    return items
+
+
 @app.route("/")
 def overview():
     with db.connect() as conn:
@@ -270,10 +337,12 @@ def overview():
                WHERE t.is_opening = 0 ORDER BY t.date DESC, t.id DESC LIMIT 10""").fetchall()
         synced = last_synced(conn)
         has_items = conn.execute("SELECT 1 FROM items").fetchone() is not None
+        plan_year = year_plan_prompt(conn)
+        steps, todo = setup_steps(conn), todo_items(conn)
     return render_template(
         "overview.html", p=p, month=reports.month_key(p["start"] if p["period"] == "month" else date.today()),
         rep=rep, trend=trend, accounts=accounts, balances=balances, recent=recent, last_synced=synced,
-        has_items=has_items)
+        has_items=has_items, plan_year=plan_year, steps=steps, todo=todo)
 
 
 # ---------------------------------------------------------------- register (Transactions sheet)
@@ -330,6 +399,7 @@ def register():
             running[r["id"]] = totals[r["account_id"]]
         categories = all_categories(conn)
         accounts = all_accounts(conn)
+        suggest = category_suggestions(conn, [t for t in txs if t["category_id"] is None and not t["is_opening"]])
     month_d = parse_month(month_raw) if month_raw not in ("all", "range") else date.today().replace(day=1)
     if span:
         label = f"{span[0]:%b} {span[0].day}, {span[0].year} – {span[1]:%b} {span[1].day}, {span[1].year}"
@@ -339,7 +409,7 @@ def register():
         "register.html", txs=txs, running=running, categories=categories, accounts=accounts,
         month=month_raw, label=label, span=span,
         prev=reports.month_key(reports.add_months(month_d, -1)), nxt=reports.month_key(reports.add_months(month_d, 1)),
-        account=account, cat=cat, q=q, uncleared=uncleared,
+        account=account, cat=cat, q=q, uncleared=uncleared, suggest=suggest,
         total_in=sum(t["amount"] for t in txs if t["amount"] > 0),
         total_out=-sum(t["amount"] for t in txs if t["amount"] < 0))
 
@@ -370,7 +440,7 @@ def register_add():
     with db.connect() as conn:
         try:
             t = _tx_from_form(conn)
-            check_category(conn, t["category_id"], t["amount"])
+            check_category(conn, t["category_id"], t["amount"], when=t["date"])
         except ValueError as e:
             flash(str(e), "error")
             return back("register")
@@ -396,7 +466,7 @@ def register_edit(tx_id):
                 if tx["plaid_id"]:  # the bank owns date/amount/account; you own payee/memo/category
                     t.update(account_id=tx["account_id"], date=tx["date"], amount=tx["amount"])
                 same_side = (t["amount"] > 0) == (tx["amount"] > 0)
-                check_category(conn, t["category_id"], t["amount"], tx["category_id"] if same_side else None)
+                check_category(conn, t["category_id"], t["amount"], tx["category_id"] if same_side else None, t["date"])
             except ValueError as e:
                 flash(str(e), "error")
                 return redirect(url_for("register_edit", tx_id=tx_id, next=request.form.get("next")))
@@ -438,7 +508,7 @@ def register_category(tx_id):
             abort(404)
         quiet = request.headers.get("X-Requested-With") == "fetch"  # changed in place on the Register, no reload
         try:
-            check_category(conn, category_id, tx["amount"], tx["category_id"])
+            check_category(conn, category_id, tx["amount"], tx["category_id"], tx["date"])
         except ValueError as e:
             if quiet:
                 return jsonify(error=str(e)), 400
@@ -460,7 +530,7 @@ def budget():
             action = request.form.get("action", "save")
             months = [f"{year:04d}-{m:02d}" for m in range(1, 13)]
             if action == "save":
-                for c in conn.execute("SELECT id FROM categories WHERE kind != 'transfer'").fetchall():
+                for c in [c for c in reports.categories_in_year(conn, year) if c["kind"] != "transfer"]:
                     for i, month in enumerate(months):
                         amt = parse_money(request.form.get(f"b_{c['id']}_{i}"))
                         if amt:
@@ -472,17 +542,47 @@ def budget():
                             conn.execute("DELETE FROM budgets WHERE category_id = ? AND month = ?", (c["id"], month))
                 db.set_setting(conn, f"start_balance_{year}", str(parse_money(request.form.get("start_balance")) or 0))
                 flash(f"{year} budget saved.", "ok")
+            elif action == "from_spending":
+                # Each of this year's categories: average per month over the last 12 full months (including the
+                # category it replaced, if renamed), rounded up to $5. Only fills months that are still empty.
+                first = reports.add_months(date.today().replace(day=1), -12)
+                last = date.today().replace(day=1) - timedelta(days=1)
+                act = reports.actuals(conn, first, last)
+                filled = 0
+                for c in reports.categories_in_year(conn, year):
+                    if c["kind"] == "transfer":
+                        continue
+                    total = act.get(c["id"], 0) + (act.get(c["replaces"], 0) if c["replaces"] else 0)
+                    avg = -(-max(total, 0) / 12 // 5) * 5  # round up to the next $5
+                    if avg <= 0:
+                        continue
+                    n = 0
+                    for m in months:
+                        n += conn.execute("INSERT OR IGNORE INTO budgets (category_id, month, amount) VALUES (?, ?, ?)",
+                                          (c["id"], m, avg)).rowcount
+                    filled += 1 if n else 0
+                flash(f"Filled {filled} categories with your average monthly amounts from the last 12 months. "
+                      "Check them and change anything that looks off." if filled else
+                      "Nothing to fill: either there's no spending in the last 12 months yet, or every month already has a budget.",
+                      "ok" if filled else "error")
             elif action == "copy_last_year":
-                n = conn.execute(
-                    """INSERT OR REPLACE INTO budgets (category_id, month, amount)
-                       SELECT category_id, ? || substr(month, 5), amount FROM budgets WHERE month LIKE ?""",
-                    (str(year), f"{year - 1:04d}-%")).rowcount
+                # Each of this year's categories takes last year's amounts from itself, or from the category it
+                # replaced (renamed / changed for this year). Categories retired before this year are skipped.
+                n = 0
+                for c in reports.categories_in_year(conn, year):
+                    src = c["id"]
+                    if c["active_from"] == year and c["replaces"]:
+                        src = c["replaces"]
+                    n += conn.execute(
+                        """INSERT OR REPLACE INTO budgets (category_id, month, amount)
+                           SELECT ?, ? || substr(month, 5), amount FROM budgets WHERE category_id = ? AND month LIKE ?""",
+                        (c["id"], str(year), src, f"{year - 1:04d}-%")).rowcount
                 flash(f"Copied {n} amounts from {year - 1}." if n else f"There's no {year - 1} budget to copy.",
                       "ok" if n else "error")
             return redirect(url_for("budget", year=year))
 
         months, grid = reports.budget_grid(conn, year)
-        cats = [c for c in all_categories(conn) if c["kind"] != "transfer"]
+        cats = [c for c in reports.categories_in_year(conn, year) if c["kind"] != "transfer"]
         start_balance = float(db.get_setting(conn, f"start_balance_{year}", "0") or 0)
     inc = [sum(grid.get(c["id"], [0] * 12)[i] for c in cats if c["kind"] == "income") for i in range(12)]
     exp = [sum(grid.get(c["id"], [0] * 12)[i] for c in cats if c["kind"] == "expense") for i in range(12)]
@@ -634,22 +734,22 @@ def categories_page():
                     name = request.form.get(f"name_{i}", "").strip()
                     kind = request.form.get(f"kind_{i}", "expense")
                     if name:
-                        try:
-                            conn.execute("UPDATE categories SET name=?, kind=?, sort=? WHERE id=?",
-                                         (name, kind if kind in ("income", "expense", "transfer") else "expense",
-                                          int(parse_money(request.form.get(f"sort_{i}")) or 0), i))
-                        except Exception:
-                            flash(f"There's already a category called \"{name}\".", "error")
+                        me = conn.execute("SELECT * FROM categories WHERE id = ?", (i,)).fetchone()
+                        if db.name_clash(conn, name, me["active_from"], me["active_until"], ignore_id=i):
+                            flash(f"There's already a category called \"{name}\" in the same years.", "error")
+                            continue
+                        conn.execute("UPDATE categories SET name=?, kind=?, sort=? WHERE id=?",
+                                     (name, kind if kind in ("income", "expense", "transfer") else "expense",
+                                      int(parse_money(request.form.get(f"sort_{i}")) or 0), i))
                 flash("Categories saved.", "ok")
             elif action == "add":
                 name = request.form.get("name", "").strip()
                 kind = request.form.get("kind", "expense")
-                if name:
-                    try:
-                        conn.execute("INSERT INTO categories (name, kind, sort) VALUES (?, ?, 500)", (name, kind))
-                        flash(f"Added \"{name}\".", "ok")
-                    except Exception:
-                        flash(f"There's already a category called \"{name}\".", "error")
+                if name and db.name_clash(conn, name):
+                    flash(f"There's already a category called \"{name}\".", "error")
+                elif name:
+                    conn.execute("INSERT INTO categories (name, kind, sort) VALUES (?, ?, 500)", (name, kind))
+                    flash(f"Added \"{name}\".", "ok")
             elif action == "delete":
                 conn.execute("DELETE FROM categories WHERE id = ?", (int(request.form.get("id", 0)),))
                 flash("Category deleted. Its transactions are now uncategorized.", "ok")
@@ -657,7 +757,128 @@ def categories_page():
         cats = all_categories(conn)
         counts = {r["category_id"]: r["n"] for r in conn.execute(
             "SELECT category_id, COUNT(*) AS n FROM transactions GROUP BY category_id")}
-    return render_template("categories.html", cats=cats, counts=counts)
+    return render_template("categories.html", cats=cats, counts=counts, next_year=date.today().year + 1)
+
+
+# ---------------------------------------------------------------- planning categories for a new year
+# From December 1 the Overview asks once per launch whether to plan next year's categories. Changes made here
+# start on January 1 of that year: earlier years keep their categories exactly as they were.
+
+PLAN_FROM_MONTH = 12      # start asking on December 1
+PLAN_NEW_ROWS = 6         # blank "add a category" rows on the planner
+SYSTEM_CATEGORIES = (db.TRANSFER, db.BEGINNING)
+
+
+def year_plan_prompt(conn):
+    """The year to ask about on the Overview, or None."""
+    today = date.today()
+    if today.month < PLAN_FROM_MONTH:
+        return None
+    year = today.year + 1
+    if db.get_setting(conn, f"year_plan_{year}") or session.get(f"year_plan_later_{year}"):
+        return None
+    return year
+
+
+@app.post("/categories/plan/later")
+def year_plan_later():
+    year = int(request.form.get("year") or date.today().year + 1)
+    if request.form.get("never") == "1":
+        with db.connect() as conn:
+            db.set_setting(conn, f"year_plan_{year}", "no changes")
+    else:
+        session[f"year_plan_later_{year}"] = True  # ask again next time the app is opened
+    return redirect(url_for("overview"))
+
+
+def plan_rows(conn, year):
+    """The categories used in `year` that can be planned (the two built-in non-budget ones are left alone)."""
+    counts = {r["category_id"]: r["n"] for r in conn.execute(
+        "SELECT category_id, COUNT(*) AS n FROM transactions WHERE date >= ? GROUP BY category_id", (f"{year}-01-01",))}
+    budgeted = {r["category_id"] for r in conn.execute("SELECT DISTINCT category_id FROM budgets WHERE month >= ?", (f"{year}-01",))}
+    return [dict(c, later_tx=counts.get(c["id"], 0), budgeted=c["id"] in budgeted)
+            for c in reports.categories_in_year(conn, year) if c["name"] not in SYSTEM_CATEGORIES]
+
+
+def apply_year_plan(conn, year, form):
+    """Apply the planner's changes from January 1 of `year`. Returns (summary lines, problem or None).
+    Nothing is changed if there's a problem (duplicate or missing names)."""
+    kinds = ("income", "expense", "transfer")
+    rows = plan_rows(conn, year)
+    keep_names, todo = {}, []
+    for c in rows:
+        keep = form.get(f"keep_{c['id']}") == "1"
+        name = (form.get(f"name_{c['id']}") or "").strip() or c["name"]
+        kind = form.get(f"kind_{c['id']}") if form.get(f"kind_{c['id']}") in kinds else c["kind"]
+        todo.append((c, keep, name, kind))
+        if keep:
+            keep_names.setdefault(name.lower(), []).append(name)
+    added = []
+    for i in range(PLAN_NEW_ROWS):
+        name = (form.get(f"new_name_{i}") or "").strip()
+        if name:
+            kind = form.get(f"new_kind_{i}") if form.get(f"new_kind_{i}") in kinds else "expense"
+            added.append((name, kind))
+            keep_names.setdefault(name.lower(), []).append(name)
+    dupes = [v[0] for v in keep_names.values() if len(v) > 1]
+    if dupes:
+        return [], f"Two categories for {year} would both be called \"{dupes[0]}\". Give them different names."
+    for lower in keep_names:
+        if lower in (n.lower() for n in SYSTEM_CATEGORIES):
+            return [], f"\"{keep_names[lower][0]}\" is a built-in name. Pick another one."
+
+    summary, start = [], f"{year}-01-01"
+    for c, keep, name, kind in todo:
+        only_from_this_year = c["active_from"] is not None and c["active_from"] >= year
+        if not keep:
+            if only_from_this_year:
+                conn.execute("DELETE FROM categories WHERE id = ?", (c["id"],))  # budgets go; transactions become uncategorized
+            else:
+                conn.execute("UPDATE categories SET active_until = ? WHERE id = ?", (year - 1, c["id"]))
+                conn.execute("DELETE FROM budgets WHERE category_id = ? AND month >= ?", (c["id"], f"{year}-01"))
+                conn.execute("UPDATE transactions SET category_id = NULL WHERE category_id = ? AND date >= ?", (c["id"], start))
+            summary.append(f"Retired \"{c['name']}\"" + (f" ({c['later_tx']} {year}+ transactions are now uncategorized)" if c["later_tx"] else ""))
+        elif name != c["name"] or kind != c["kind"]:
+            if only_from_this_year:
+                conn.execute("UPDATE categories SET name = ?, kind = ? WHERE id = ?", (name, kind, c["id"]))
+            else:
+                new_id = conn.execute(
+                    "INSERT INTO categories (name, kind, sort, active_from, active_until, replaces) VALUES (?, ?, ?, ?, ?, ?)",
+                    (name, kind, c["sort"], year, c["active_until"], c["id"])).lastrowid
+                conn.execute("UPDATE categories SET active_until = ? WHERE id = ?", (year - 1, c["id"]))
+                conn.execute("UPDATE budgets SET category_id = ? WHERE category_id = ? AND month >= ?", (new_id, c["id"], f"{year}-01"))
+                conn.execute("UPDATE transactions SET category_id = ? WHERE category_id = ? AND date >= ?", (new_id, c["id"], start))
+            change = []
+            if name != c["name"]:
+                change.append(f"renamed to \"{name}\"")
+            if kind != c["kind"]:
+                change.append(f"now {'non-budget' if kind == 'transfer' else kind}")
+            summary.append(f"\"{c['name']}\" " + " and ".join(change))
+    for name, kind in added:
+        conn.execute("INSERT INTO categories (name, kind, sort, active_from) VALUES (?, ?, 500, ?)", (name, kind, year))
+        summary.append(f"Added \"{name}\"")
+    db.set_setting(conn, f"year_plan_{year}", "planned")
+    return summary, None
+
+
+@app.route("/categories/plan", methods=["GET", "POST"])
+def year_plan():
+    year = int(request.values.get("year") or date.today().year + 1)
+    if year <= date.today().year:
+        flash("Planning is for years that haven't started yet. To change categories for every year, edit them on this screen.", "error")
+        return redirect(url_for("categories_page"))
+    with db.connect() as conn:
+        if request.method == "POST":
+            summary, problem = apply_year_plan(conn, year, request.form)
+            if problem:
+                conn.rollback()
+                flash(problem, "error")
+                return redirect(url_for("year_plan", year=year))
+            flash(f"{year} categories saved: " + ("; ".join(summary) if summary else "no changes") + ". "
+                  f"{year - 1} and earlier are unchanged.", "ok")
+            return redirect(url_for("budget", year=year) if summary else url_for("categories_page"))
+        rows = plan_rows(conn, year)
+    return render_template("year_plan.html", year=year, rows=rows, new_rows=range(PLAN_NEW_ROWS))
 
 
 # ---------------------------------------------------------------- settings
@@ -798,23 +1019,22 @@ def update_check():
     if st["error"]:
         flash(st["error"], "error")
     elif st["available"]:
-        flash(f"Version {st['latest']} is available.", "ok")
-    elif st["latest"]:
-        flash(f"You're up to date (version {st['current']}).", "ok")
+        flash(f"An update is available: {st['latest']}.", "ok")
+    elif st["from_source"]:
+        flash("This copy runs from source, so it doesn't update itself. Use git pull.", "ok")
     else:
-        flash("No releases have been published yet.", "ok")
+        flash(f"You're up to date ({st['current']}).", "ok")
     return back("settings")
 
 
 @app.post("/update/install")
 def update_install():
+    """Hand over to "Update Budget Tool.exe": it waits for Budget Tool to close, installs, and reopens it."""
     try:
-        new_dir, work = updater.prepare()
-        updater.launch_swap(new_dir, work)
+        updater.launch_updater()
     except Exception as e:
-        flash(f"Update failed: {e}", "error")
+        flash(f"Couldn't start the updater: {e}", "error")
         return back("settings")
-    # Quit so the helper can replace the program files; it reopens the app when it's done.
     threading.Timer(1.5, lambda: os._exit(0)).start()
     return render_template("updating.html", version=updater.status()["latest"])
 
