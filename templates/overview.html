@@ -78,6 +78,8 @@
         <td class="num {{ 'pos' if t.expense.budget >= t.expense.actual else 'neg' }}">{{ (t.expense.budget - t.expense.actual)|money }}</td></tr>
       <tr class="strong"><td>NET</td><td class="num">{{ t.net.budget|money }}</td><td class="num {{ 'pos' if t.net.actual >= 0 else 'neg' }}">{{ t.net.actual|money }}</td>
         <td class="num {{ 'pos' if t.net.actual >= t.net.budget else 'neg' }}">{{ (t.net.actual - t.net.budget)|money }}</td></tr>
+      {% if t.transfers %}<tr class="muted"><td title="Money moved between accounts as [Transfer]. It isn't income or spending, so it's left out of the totals above.">Transfers (not counted)</td>
+        <td></td><td class="num">{{ t.transfers|money }}</td><td></td></tr>{% endif %}
     </tbody>
   </table>
 </section>

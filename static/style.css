@@ -329,4 +329,7 @@ table.plan [data-warn-off]:not([hidden]) { color: var(--warn); display: block; }
 .todo-item.warn span { color: var(--warn); }
 .chip { margin-left: .35rem; padding: .15rem .55rem; border-radius: var(--radius); border: 1px dashed var(--sun); background: transparent;
   color: var(--sun); font-size: .82rem; cursor: pointer; white-space: nowrap; }
+.linkish { background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
+.linkish:hover { color: var(--sun); }
+form.tfform { display: inline; margin-left: .35rem; }
 .chip:hover { background: var(--sun); color: var(--on-accent); border-style: solid; }

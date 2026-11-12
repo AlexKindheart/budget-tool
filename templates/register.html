@@ -3,7 +3,7 @@
 {% block main_class %}wide{% endblock %}
 {% block content %}
 {% from '_categories.html' import category_options %}
-{% set qs = '&account=' ~ account ~ '&category=' ~ cat ~ '&q=' ~ (q|urlencode) ~ ('&uncleared=1' if uncleared else '') %}
+{% set qs = '&account=' ~ account ~ '&category=' ~ cat ~ '&q=' ~ (q|urlencode) ~ ('&uncleared=1' if uncleared else '') ~ ('&transfers=check' if check else '') %}
 <div class="bar">
   <div class="month">
     {% if month not in ('all', 'range') %}<a class="btn ghost" href="?month={{ prev }}{{ qs }}">&larr;</a>{% endif %}
@@ -27,6 +27,7 @@
       {% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if cat == c.id|string }}>{{ c.name }}</option>{% endfor %}
     </select>
     <label class="small"><input type="checkbox" name="uncleared" value="1" {{ 'checked' if uncleared }} onchange="this.form.submit()"> Pending only</label>
+    {% if to_check or check %}<label class="small" title="Transfers that might be counted as income or spending by mistake"><input type="checkbox" name="transfers" value="check" {{ 'checked' if check }} onchange="this.form.submit()"> Transfers to check ({{ to_check|length }})</label>{% endif %}
     <input type="search" name="q" value="{{ q }}" placeholder="Search payee / memo">
     <button class="btn">Filter</button>
   </form>
@@ -66,7 +67,24 @@
         <td class="nowrap">{{ t.date }}</td>
         <td>{{ t.payee }}{% if t.plaid_id %} <span class="pill" title="From your bank">bank</span>{% endif %}{% if t.plaid_id and not t.cleared %} <span class="pill warn" title="Your bank hasn't finished processing this yet">pending</span>{% endif %}
           {% if t.memo %}<div class="muted small">{{ t.memo }}</div>{% endif %}
-          {% if t.bank_name and t.bank_name != t.payee %}<div class="muted small" title="As your bank describes it">{{ t.bank_name }}</div>{% endif %}</td>
+          {% if t.bank_name and t.bank_name != t.payee %}<div class="muted small" title="As your bank describes it">{{ t.bank_name }}</div>{% endif %}
+          {% if t.transfer_pair %}
+            <div class="small"><span class="pill" title="Matched with {{ t.pair_account }} on {{ t.pair_date }}. Transfers aren't income or spending.">&harr; {{ t.pair_account }}</span>
+              <form method="post" action="{{ url_for('register_transfer', tx_id=t.id) }}" class="tfform">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+                <button class="linkish small" title="Undo the match: both go back to Uncategorized">Not a transfer</button></form></div>
+          {% elif to_check.get(t.id) %}
+            <div class="small"><span class="pill warn" title="{{ to_check[t.id] }}">transfer?</span>
+              <span class="muted">{{ to_check[t.id] }}</span>
+              {% if t.category_kind == 'transfer' %}
+              <form method="post" action="{{ url_for('register_transfer', tx_id=t.id) }}" class="tfform">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+                <input type="hidden" name="action" value="outside">
+                <button class="linkish small">Other side isn't in Budget Tool</button></form>{% endif %}
+              <form method="post" action="{{ url_for('register_transfer', tx_id=t.id) }}" class="tfform">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+                <button class="linkish small">Not a transfer</button></form></div>
+          {% endif %}</td>
         <td>
           <form method="post" action="{{ url_for('register_category', tx_id=t.id) }}" class="catform">
             <input type="hidden" name="csrf" value="{{ csrf_token() }}">
@@ -75,7 +93,7 @@
               {{ category_options(categories, 'income' if t.amount > 0 else ('expense' if t.amount < 0 else ''), t.category_id, t.date[:4]|int) }}
             </select>
             {% if suggest.get(t.id) %}<button type="button" class="chip" data-suggest="{{ suggest[t.id][0] }}"
-              title="You used this for {{ t.payee }} before. Click to use it again.">{{ suggest[t.id][1] }}?</button>{% endif %}
+              title="{{ suggest[t.id][2] }}">{{ suggest[t.id][1] }}?</button>{% endif %}
           </form>
         </td>
         <td class="num">{% if t.amount < 0 %}{{ (-t.amount)|money }}{% endif %}</td>

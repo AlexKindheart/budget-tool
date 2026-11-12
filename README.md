@@ -21,7 +21,16 @@ How the numbers work:
 
 - **Expense** categories count as spending (refunds reduce it). **Income** categories count as money in.
 - **Non-budget** categories ([Transfer], [Beginning Balance]) are left out of every total. Use them for money moving
-  between your own accounts.
+  between your own accounts. The Overview and Reports show them on a separate *Transfers (not counted)* line.
+- **Transfers between your accounts are matched for you.** A payment in one account and a deposit of the same amount
+  in another, within 5 days, are paired and both get [Transfer] (the Register shows "↔ Savings" on each side;
+  **Not a transfer** undoes it for good). Only Uncategorized transactions are matched, and pending ones wait until
+  they post. When your bank marks something as a transfer or credit card payment but the other side isn't in Budget
+  Tool, you get a one-click **[Transfer]?** suggestion instead.
+- **Transfers to check** (on the To do card, and a Register filter) lists a [Transfer] with no other side, a
+  transfer-looking transaction that's still Uncategorized, and a credit card payment filed as spending (the card's
+  purchases already count, so that counts it twice). **Other side isn't in Budget Tool** marks a one-sided transfer
+  (to a friend, or an account you don't track here) as fine.
 - Bank charges that haven't gone through yet show a **pending** label until your bank posts them.
 - Bank-linked accounts get an automatic [Beginning Balance] entry, so the register's posted balance equals what the
   bank reports.
@@ -129,6 +138,7 @@ The app runs a small server that only this computer can reach, and only with a k
 | `update_gui.py` | The updater window (`Update Budget Tool.exe`) |
 | `app.py` | Screens and actions |
 | `reports.py` | Budget vs. actual, yearly, weekly, and trend numbers |
+| `transfers.py` | Matches transfers between your accounts and lists ones to check |
 | `updater.py` | Checks GitHub for newer commits and installs them |
 | `plaid_client.py` | Plaid API calls and the sync that fills the register |
 | `db.py` | Database and starter categories |
