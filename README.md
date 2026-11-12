@@ -15,7 +15,7 @@ yearly budget, budget-vs-actual reports), except your bank transactions fill the
 | **Accounts** | Accounts with savings goals and % reached, posted and total balances, what the bank says, and bank connections |
 | **Categories** | Income, expense and non-budget categories ([Transfer], [Beginning Balance]). **Plan changes for next year** renames, retires or adds categories from January 1 without changing earlier years; from December 1 the Overview asks if you'd like to. |
 | **Export** | Saves an Excel workbook for any date range and accounts: budget vs. actual, every transaction (sortable table), each category by month, and account balances |
-| **Settings** | Plaid keys, auto-sync interval, and app updates |
+| **Settings** | Plaid keys and app updates |
 
 How the numbers work:
 
@@ -79,6 +79,9 @@ the first time: click **More info → Run anyway**.
    (login `user_good` / `pass_good`) or **Production** for your real bank (Plaid must approve production access).
 3. On **Accounts**, click **Connect a bank**. Plaid's sign-in opens in your web browser, because banks only allow
    their secure login there. When it says you're done, close the tab and the app refreshes.
+
+After that, Budget Tool syncs with your bank **each time you open it** (it says "Syncing with your bank…" at the top
+and refreshes when new transactions arrive). To pick up something new, close Budget Tool and open it again.
 
 Already tracking an account by hand? After connecting its bank, use **Same as … Link** on the Accounts screen. The
 bank's transactions then continue that account's register from the day after your last entry, instead of

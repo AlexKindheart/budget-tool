@@ -16,7 +16,6 @@ CONFIG_DEFAULTS = {
     "plaid_secret": "",
     "plaid_env": "sandbox",
     "plaid_country_codes": "US",
-    "sync_interval_hours": "6",
 }
 
 

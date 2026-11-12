@@ -43,11 +43,7 @@
     </div>
   </div>
   <div class="actions">
-    {% if has_items %}<span class="muted small">Bank sync: {{ last_synced|ago }}</span>
-    <form method="post" action="{{ url_for('sync') }}">
-      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
-      <button class="btn">Sync now</button>
-    </form>{% endif %}
+    {% if has_items and not syncing %}<span class="muted small" title="Budget Tool syncs with your bank each time you open it">Bank sync: {{ last_synced|ago }}</span>{% endif %}
     <a class="btn primary" href="{{ url_for('register', month=month) }}#add">+ Transaction</a>
   </div>
 </div>

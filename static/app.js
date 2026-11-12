@@ -162,3 +162,20 @@ document.addEventListener('click', (e) => {
   sel.dispatchEvent(new Event('change', { bubbles: true }));
   chip.remove();
 });
+
+// Budget Tool syncs with your bank as it opens. Until that's done, wait, then reload if anything new arrived
+// (unless you've started typing, so nothing you're entering is lost).
+(function () {
+  const note = document.querySelector('[data-syncing]');
+  if (!note) return;
+  const timer = setInterval(async () => {
+    try {
+      const s = await (await fetch('/api/sync-status')).json();
+      if (s.running) return;
+      clearInterval(timer);
+      const typing = document.activeElement && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+      if (s.changed > 0 && !typing) window.location.reload();
+      else note.remove();
+    } catch (e) { /* try again */ }
+  }, 1500);
+})();

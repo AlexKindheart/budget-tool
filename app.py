@@ -34,6 +34,7 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Strict"
 LAUNCH_KEY = secrets.token_urlsafe(24)
 BASE_URL = ""          # set by start_server()
 DATA_VERSION = [0]     # bumped when a bank is (re)connected, so the window knows to refresh
+STARTUP_SYNC = {"running": False, "changed": 0}  # the one bank sync each time Budget Tool opens
 WINDOW_MESSAGES = []   # messages from the browser sign-in, shown in the app window next time it loads
 ACCOUNT_KINDS = ["checking", "savings", "credit", "loan", "cash", "other"]
 
@@ -70,6 +71,7 @@ def deliver_window_messages():
 @app.context_processor
 def inject_globals():
     return {"csrf_token": csrf_token, "plaid_env": plaid.env(), "plaid_ready": plaid.configured(),
+            "syncing": STARTUP_SYNC["running"],
             "today": date.today(), "update": updater.status()}
 
 
@@ -210,16 +212,6 @@ def account_balances(conn):
 
 def last_synced(conn):
     return conn.execute("SELECT MAX(last_synced) FROM items").fetchone()[0]
-
-
-def run_sync_and_flash():
-    if not plaid.configured():
-        flash("Add your Plaid keys on the Settings screen first.", "error")
-        return
-    totals, errors = plaid.sync_all()
-    flash(f"Synced: {totals['added']} new, {totals['modified']} updated, {totals['removed']} removed.", "ok")
-    for err in errors:
-        flash(err, "error")
 
 
 # ---------------------------------------------------------------- overview
@@ -715,12 +707,6 @@ def accounts():
                            bank_sign=plaid.bank_balance_in_register_sign)
 
 
-@app.post("/sync")
-def sync():
-    run_sync_and_flash()
-    return back()
-
-
 # ---------------------------------------------------------------- categories
 
 @app.route("/categories", methods=["GET", "POST"])
@@ -996,7 +982,7 @@ def export_open():
 def settings():
     if request.method == "POST":
         with db.connect() as conn:
-            for key in ("plaid_client_id", "plaid_env", "plaid_country_codes", "sync_interval_hours"):
+            for key in ("plaid_client_id", "plaid_env", "plaid_country_codes"):
                 db.set_setting(conn, key, request.form.get(key, "").strip())
             secret = request.form.get("plaid_secret", "").strip()
             if secret:  # blank = keep the saved secret
@@ -1007,7 +993,7 @@ def settings():
         "settings.html",
         client_id=plaid.cfg("plaid_client_id"), has_secret=bool(plaid.cfg("plaid_secret")),
         env=plaid.env(), countries=plaid.cfg("plaid_country_codes"),
-        interval=plaid.cfg("sync_interval_hours"), data_dir=DATA_DIR,
+        data_dir=DATA_DIR,
     )
 
 
@@ -1094,7 +1080,7 @@ def api_exchange():
     except Exception as e:
         return jsonify(error=str(e)), 502
     msg = (f"Bank connected. Pulled {result['added']} transactions"
-           + (" (more may appear in a few minutes - click Sync now)." if result["added"] == 0 else ".")
+           + (" (more may appear the next time you open Budget Tool)." if result["added"] == 0 else ".")
            + " If an account is one you already track, link it on the Accounts page.")
     WINDOW_MESSAGES.append((msg, "ok"))
     bump_data_version()
@@ -1113,25 +1099,33 @@ def api_reconnected():
     return jsonify(ok=True, message="Reconnected and synced.")
 
 
-# ---------------------------------------------------------------- background server + auto-sync
+# ---------------------------------------------------------------- background server, bank sync on open
 
-def auto_sync_loop():
+def startup_sync():
+    """Bring every connected bank up to date once, as Budget Tool opens. The window shows "Syncing with your
+    bank" meanwhile, and reloads when it's done if anything changed. Problems show on the Accounts screen."""
+    try:
+        totals, errors = plaid.sync_all()
+        STARTUP_SYNC["changed"] = totals["added"] + totals["modified"] + totals["removed"]
+        print(f"[sync] {totals}" + (f" errors: {errors}" if errors else ""))
+    except Exception as e:
+        print(f"[sync] failed: {e}")
+    finally:
+        STARTUP_SYNC["running"] = False
+
+
+@app.get("/api/sync-status")
+def api_sync_status():
+    return jsonify(running=STARTUP_SYNC["running"], changed=STARTUP_SYNC["changed"])
+
+
+def update_check_loop():
     while True:
         try:
             updater.check()  # at most every 6 hours; shows a banner when there's a new version
         except Exception as e:
             print(f"[update-check] failed: {e}")
-        if plaid.configured():
-            try:
-                totals, errors = plaid.sync_all()
-                print(f"[auto-sync] {totals}" + (f" errors: {errors}" if errors else ""))
-            except Exception as e:
-                print(f"[auto-sync] failed: {e}")
-        try:
-            hours = float(plaid.cfg("sync_interval_hours") or 6)
-        except ValueError:
-            hours = 6
-        time.sleep(max(hours, 0.25) * 3600)
+        time.sleep(6 * 3600)
 
 
 def start_server():
@@ -1141,7 +1135,12 @@ def start_server():
     server = make_server("127.0.0.1", 0, app, threaded=True)
     BASE_URL = f"http://127.0.0.1:{server.server_port}"
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    threading.Thread(target=auto_sync_loop, daemon=True).start()
+    with db.connect() as conn:
+        has_banks = conn.execute("SELECT 1 FROM items").fetchone() is not None
+    if has_banks and plaid.configured():
+        STARTUP_SYNC["running"] = True
+        threading.Thread(target=startup_sync, daemon=True).start()
+    threading.Thread(target=update_check_loop, daemon=True).start()
     return f"{BASE_URL}/?key={LAUNCH_KEY}"
 
 

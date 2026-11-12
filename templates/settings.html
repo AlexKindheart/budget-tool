@@ -29,10 +29,7 @@
       <label for="cc">Countries</label>
       <input id="cc" name="plaid_country_codes" value="{{ countries }}" placeholder="US">
     </div>
-    <div class="form-row">
-      <label for="iv">Auto-sync every (hours)</label>
-      <input id="iv" name="sync_interval_hours" type="number" min="0.25" step="0.25" value="{{ interval }}">
-    </div>
+    <p class="muted small">Budget Tool syncs with your bank each time you open it.</p>
     <button class="btn primary">Save</button>
   </form>
 </section>

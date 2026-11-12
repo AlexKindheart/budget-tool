@@ -40,6 +40,7 @@
     {% for cat, msg in get_flashed_messages(with_categories=true) %}
       <div class="flash {{ cat }}">{{ msg }}</div>
     {% endfor %}
+    {% if syncing %}<div class="flash" data-syncing>Syncing with your bank…</div>{% endif %}
     <div id="js-error" class="flash error" hidden></div>
     {% block content %}{% endblock %}
   </main>
