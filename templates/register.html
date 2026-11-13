@@ -3,7 +3,7 @@
 {% block main_class %}wide{% endblock %}
 {% block content %}
 {% from '_categories.html' import category_options %}
-{% set qs = '&account=' ~ account ~ '&category=' ~ cat ~ '&q=' ~ (q|urlencode) ~ ('&uncleared=1' if uncleared else '') %}
+{% set qs = '&account=' ~ account ~ '&category=' ~ cat ~ '&q=' ~ (q|urlencode) ~ ('&uncleared=1' if uncleared else '') ~ ('&combined=1' if combined else '') %}
 <div class="bar">
   <div class="month">
     {% if month not in ('all', 'range') %}<a class="btn ghost" href="?month={{ prev }}{{ qs }}">&larr;</a>{% endif %}
@@ -27,6 +27,7 @@
       {% for c in categories %}<option value="{{ c.id }}" {{ 'selected' if cat == c.id|string }}>{{ c.name }}</option>{% endfor %}
     </select>
     <label class="small"><input type="checkbox" name="uncleared" value="1" {{ 'checked' if uncleared }} onchange="this.form.submit()"> Pending only</label>
+    {% if combined %}<label class="small" title="Bank transactions combined with ones you typed in"><input type="checkbox" name="combined" value="1" checked onchange="this.form.submit()"> Combined only</label>{% endif %}
     <input type="search" name="q" value="{{ q }}" placeholder="Search payee / memo">
     <button class="btn">Filter</button>
   </form>
@@ -54,20 +55,35 @@
 <section class="card">
   <div class="bar tight">
     <span class="muted small">{{ txs|length }} transactions · in {{ total_in|money }} · out {{ total_out|money }}</span>
+    <form method="post" action="{{ url_for('register_bulk_category') }}" id="bulk-form" class="inline bulk" data-bulk hidden>
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+      <span class="small"><strong data-bulk-count>0</strong> ticked: give them</span>
+      <select name="category_id" aria-label="Category for the ticked transactions">{{ category_options(categories, '', None) }}</select>
+      <button class="btn small primary">Apply</button>
+    </form>
   </div>
   <div class="scroll">
   <table class="tx">
-    <thead><tr><th>Account</th><th>Date</th><th>Payee</th><th>Category</th>
+    <thead><tr><th class="tick"><input type="checkbox" data-bulk-all aria-label="Tick every transaction shown"></th><th>Account</th><th>Date</th><th>Payee</th><th>Category</th>
       <th class="num">Payment</th><th class="num">Deposit</th><th class="num">Balance</th><th></th></tr></thead>
     <tbody>
     {% for t in txs %}
       <tr class="{{ 'uncleared' if t.plaid_id and not t.cleared }}">
+        <td class="tick">{% if not t.is_opening and t.id not in parts %}<input type="checkbox" name="ids" value="{{ t.id }}" form="bulk-form" aria-label="Tick {{ t.payee }}">{% endif %}</td>
         <td class="small nowrap">{{ t.account }}</td>
         <td class="nowrap">{{ t.date }}</td>
-        <td>{{ t.payee }}{% if t.plaid_id %} <span class="pill" title="From your bank">bank</span>{% endif %}{% if t.plaid_id and not t.cleared %} <span class="pill warn" title="Your bank hasn't finished processing this yet">pending</span>{% endif %}
+        <td>{{ t.payee }}{% if t.plaid_id %} <span class="pill" title="From your bank">bank</span>{% endif %}{% if t.plaid_id and not t.cleared %} <span class="pill warn" title="Your bank hasn't finished processing this yet">pending</span>{% endif %}{% if not t.plaid_id and t.cleared == 'R' and not t.is_opening %} <span class="pill" title="Matched to a statement on the Accounts screen">reconciled</span>{% endif %}
           {% if t.memo %}<div class="muted small">{{ t.memo }}</div>{% endif %}
-          {% if t.bank_name and t.bank_name != t.payee %}<div class="muted small" title="As your bank describes it">{{ t.bank_name }}</div>{% endif %}</td>
+          {% if t.bank_name and t.bank_name != t.payee %}<div class="muted small" title="As your bank describes it">{{ t.bank_name }}</div>{% endif %}
+          {% if t.merged %}<div class="small"><span class="pill" title="{{ merged_notes[t.id] }}">combined</span>
+            <form method="post" action="{{ url_for('register_split', tx_id=t.id) }}" class="tight-inline">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ request.full_path }}">
+              <button class="linkish small" title="Your entry and the bank's are different transactions: show both again">Not the same</button></form></div>{% endif %}</td>
         <td>
+          {% if t.id in parts %}
+          <a class="split-cell" href="{{ url_for('register_edit', tx_id=t.id, next=request.full_path) }}" title="Split across categories. Click to change it.">
+            <span class="pill">split</span>{% for s in parts[t.id] %}<span class="small">{{ s.category }} {{ s.amount|abs|money }}</span>{% endfor %}</a>
+          {% else %}
           <form method="post" action="{{ url_for('register_category', tx_id=t.id) }}" class="catform">
             <input type="hidden" name="csrf" value="{{ csrf_token() }}">
             <input type="hidden" name="next" value="{{ request.full_path }}">
@@ -77,6 +93,7 @@
             {% if suggest.get(t.id) %}<button type="button" class="chip" data-suggest="{{ suggest[t.id][0] }}"
               title="{{ suggest[t.id][2] }}">{{ suggest[t.id][1] }}?</button>{% endif %}
           </form>
+          {% endif %}
         </td>
         <td class="num">{% if t.amount < 0 %}{{ (-t.amount)|money }}{% endif %}</td>
         <td class="num pos">{% if t.amount > 0 %}{{ t.amount|money }}{% endif %}</td>
@@ -84,7 +101,7 @@
         <td><a class="small" href="{{ url_for('register_edit', tx_id=t.id, next=request.full_path) }}">Edit</a></td>
       </tr>
     {% else %}
-      <tr><td colspan="9" class="muted">No transactions match.</td></tr>
+      <tr><td colspan="10" class="muted">No transactions match.</td></tr>
     {% endfor %}
     </tbody>
   </table>

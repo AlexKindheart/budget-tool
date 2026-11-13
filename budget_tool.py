@@ -80,7 +80,12 @@ def main():
     offer_old_data()  # before the app starts (it would create an empty database)
     remember_running()
     import webview
-    import app as budget_app
+    try:
+        import app as budget_app
+    except RuntimeError as e:  # e.g. the encryption library didn't install
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(None, str(e), "Budget Tool", 0x10)
+        sys.exit(1)
     start_url = budget_app.start_server()
     webview.create_window(
         "Budget Tool", start_url,

@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Bills{% endblock %}
+{% block content %}
+{% from '_categories.html' import category_options %}
+{% macro bill_fields(b, every) %}
+  <label>Name<input name="name" value="{{ b.name if b else '' }}" required></label>
+  <label>Amount<input name="amount" class="money" inputmode="decimal" value="{{ '%.2f'|format(b.amount) if b else '' }}" required></label>
+  <label>Type<select name="kind">
+    <option value="bill" {{ 'selected' if not b or b.kind != 'income' }}>Bill (money out)</option>
+    <option value="income" {{ 'selected' if b and b.kind == 'income' }}>Paycheck (money in)</option></select></label>
+  <label>Repeats<select name="every">{% for k, l in every %}<option value="{{ k }}" {{ 'selected' if (b.every if b else 'month') == k }}>{{ l }}</option>{% endfor %}</select></label>
+  <label>Next due<input type="date" name="next_date" value="{{ b.next_date if b else today.isoformat() }}" required></label>
+  <label>Account<select name="account_id"><option value="">(any)</option>
+    {% for a in accounts %}<option value="{{ a.id }}" {{ 'selected' if b and b.account_id == a.id }}>{{ a.name }}</option>{% endfor %}</select></label>
+  <label>Category<select name="category_id">{{ category_options(categories, '', b.category_id if b else none) }}</select></label>
+{% endmacro %}
+
+<div class="bar">
+  <h1>Bills and paychecks</h1>
+</div>
+
+<section class="card">
+  <div class="safe">
+    <span class="muted small">Safe to spend</span>
+    <strong class="hero-value {{ 'neg' if safe.amount < 0 }}">{{ safe.amount|money }}</strong>
+    <span class="muted small">{{ safe.cash|money }} in your checking and cash accounts, minus {{ safe.bills|money }} for
+      {{ safe.count }} bill{{ '' if safe.count == 1 else 's' }}
+      {% if safe.paycheck %}due before your next paycheck ({{ safe.paycheck.bill.name }}, {{ safe.until.strftime('%b %d') }}){% else %}due in the next 30 days (add your paycheck to count only the bills before it){% endif %}.</span>
+  </div>
+  <p class="muted small">Bills move on to their next date by themselves: as soon as a payment of the same amount shows up
+     in their account near the due date, or a few days after it.</p>
+</section>
+
+<section class="card">
+  <h2>Your bills and paychecks</h2>
+  {% for b in rows %}
+    <details class="bill">
+      <summary><span class="bill-name">{{ b.name }}</span>
+        <span class="muted small">{{ dict(every)[b.every] }} · next {{ b.next_date }}{% if b.account %} · {{ b.account }}{% endif %}</span>
+        <span class="num {{ 'pos' if b.kind == 'income' }}">{{ (b.amount if b.kind == 'income' else -b.amount)|money }}</span></summary>
+      <form method="post" class="addform">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="save"><input type="hidden" name="id" value="{{ b.id }}">
+        {{ bill_fields(b, every) }}
+        <button class="btn primary">Save</button>
+      </form>
+      <form method="post" onsubmit="return confirm('Remove this?')">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="{{ b.id }}">
+        <button class="btn ghost small danger">Remove</button>
+      </form>
+    </details>
+  {% else %}
+    <p class="muted">None yet. Add rent, phone, insurance, subscriptions and your paycheck below.</p>
+  {% endfor %}
+</section>
+
+<section class="card" id="add">
+  <h2>Add a bill or paycheck</h2>
+  <form method="post" class="addform">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="action" value="add">
+    {{ bill_fields(prefill, every) }}
+    <button class="btn primary">Add</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>The next 30 days</h2>
+  {% for x in coming %}
+    <div class="row"><div>{{ x.bill.name }} <div class="muted small">{{ x.date.strftime('%a %b %d') }}{% if x.bill.category %} · {{ x.bill.category }}{% endif %}</div></div>
+      <div class="num {{ 'pos' if x.income }}">{{ (x.amount if x.income else -x.amount)|money }}</div></div>
+  {% else %}<p class="muted small">Nothing due.</p>{% endfor %}
+</section>
+{% endblock %}

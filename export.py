@@ -59,7 +59,7 @@ def _sums(conn, start, end, ids, by_month=False):
     where, params = _in_accounts(ids)
     month = "substr(t.date, 1, 7)" if by_month else "''"
     rows = conn.execute(
-        f"""SELECT t.category_id AS cid, {month} AS m, SUM(t.amount) AS s FROM transactions t
+        f"""SELECT t.category_id AS cid, {month} AS m, SUM(t.amount) AS s FROM lines t
             WHERE {where} AND t.date BETWEEN ? AND ? GROUP BY t.category_id, {month}""",
         params + [start.isoformat(), end.isoformat()])
     return {(r["cid"], r["m"]) if by_month else r["cid"]: r["s"] for r in rows}
@@ -138,9 +138,10 @@ def _transactions(wb, conn, start, end, ids, account_label):
     ws = wb.create_sheet("Transactions")
     where, params = _in_accounts(ids)
     rows = conn.execute(
-        f"""SELECT t.date, a.name AS account, t.payee, c.name AS category, t.memo, t.bank_name, t.amount
-            FROM transactions t JOIN accounts a ON a.id = t.account_id LEFT JOIN categories c ON c.id = t.category_id
-            WHERE {where} AND t.date BETWEEN ? AND ? ORDER BY t.date, t.id""",
+        f"""SELECT t.date, a.name AS account, t.payee, c.name AS category, l.memo, t.bank_name, l.amount
+            FROM lines l JOIN transactions t ON t.id = l.tx_id JOIN accounts a ON a.id = t.account_id
+            LEFT JOIN categories c ON c.id = l.category_id
+            WHERE {where} AND t.date BETWEEN ? AND ? ORDER BY t.date, t.id, l.split_id""",
         params + [start.isoformat(), end.isoformat()]).fetchall()
     _header(ws, 1, ["Date", "Account", "Payee", "Category", "Memo", "Bank description", "Payment", "Deposit", "Amount"])
     for r in rows:

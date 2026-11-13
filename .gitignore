@@ -6,3 +6,5 @@ release/
 data/
 .cache/
 launcher/icon-preview.png
+signing.bat
+*.pfx

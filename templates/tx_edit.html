@@ -19,7 +19,11 @@
     <div class="form-row"><label>Payee</label><input name="payee" value="{{ tx.payee or '' }}"></div>
     {% if tx.bank_name %}<div class="form-row"><label>Bank description</label><span class="muted">{{ tx.bank_name }}</span></div>{% endif %}
     <div class="form-row"><label>Memo</label><input name="memo" value="{{ tx.memo or '' }}"></div>
+    {% if parts %}
+    <div class="form-row"><label>Category</label><span>Split into {{ parts|length }} parts (below)</span></div>
+    {% else %}
     <div class="form-row"><label>Category</label><select name="category_id">{{ category_options(categories, '', tx.category_id) }}</select></div>
+    {% endif %}
     <div class="form-row"><label>Payment</label><input name="payment" class="money" value="{{ '%.2f'|format(-tx.amount) if tx.amount < 0 }}" {{ 'readonly' if ro }}></div>
     <div class="form-row"><label>Deposit</label><input name="deposit" class="money" value="{{ '%.2f'|format(tx.amount) if tx.amount > 0 }}" {{ 'readonly' if ro }}></div>
     <div class="actions">
@@ -27,6 +31,35 @@
       <a class="btn ghost" href="{{ next }}">Cancel</a>
     </div>
   </form>
+  {% if not tx.is_opening %}
+  <details class="split-editor" {{ 'open' if parts }}>
+    <summary>{{ 'Change the split' if parts else 'Split across categories' }}</summary>
+    <p class="muted small">One payment for several things (groceries and household supplies on one receipt, say): give each part
+       its own category. The parts must add up to {{ tx.amount|abs|money }}.</p>
+    <form method="post" action="{{ url_for('register_splits', tx_id=tx.id) }}" data-split data-total="{{ '%.2f'|format(tx.amount|abs) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="next" value="{{ next }}">
+      <table class="split-rows">
+        <thead><tr><th>Category</th><th class="num">Amount</th><th>Memo (optional)</th></tr></thead>
+        <tbody>
+        {% set rows = parts if parts else [] %}
+        {% for i in range([rows|length + 2, 3]|max) %}{% set s = rows[i] if i < rows|length else none %}
+          <tr><td><select name="split_category">{{ category_options(categories, 'income' if tx.amount > 0 else 'expense', s.category_id if s else none, tx.date[:4]|int) }}</select></td>
+            <td class="num"><input name="split_amount" class="money" inputmode="decimal" value="{{ '%.2f'|format(s.amount|abs) if s }}" placeholder="0.00"></td>
+            <td><input name="split_memo" value="{{ s.memo if s }}"></td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      <p class="small"><button type="button" class="linkish" data-split-add>+ Add a part</button>
+        · <span data-split-left></span></p>
+      <div class="actions">
+        <button class="btn primary">Save split</button>
+        {% if parts %}<button class="btn ghost" name="action" value="remove" formnovalidate>Stop splitting it</button>{% endif %}
+      </div>
+    </form>
+  </details>
+  <p class="small"><a href="{{ url_for('bills_page', from_tx=tx.id) }}">Make this a repeating {{ 'paycheck' if tx.amount > 0 else 'bill' }}</a>
+    <span class="muted">(shows on the Overview's Coming up and counts in Safe to spend)</span></p>
+  {% endif %}
   {% if not tx.plaid_id %}
   <form method="post" action="{{ url_for('register_delete', tx_id=tx.id) }}" onsubmit="return confirm('Delete this transaction?')" class="right">
     <input type="hidden" name="csrf" value="{{ csrf_token() }}">

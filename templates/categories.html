@@ -9,16 +9,18 @@
 <section class="card">
   <p class="muted small"><strong>Income</strong> and <strong>Expense</strong> categories are budgeted and reported.
      <strong>Non-budget</strong> ones (like [Transfer] and [Beginning Balance]) move money between your own accounts
-     and are left out of the totals, just like the NON-BUDGET CATEGORIES in the spreadsheet.</p>
+     and are left out of the totals, just like the NON-BUDGET CATEGORIES in the spreadsheet.
+     Tick <strong>carry over</strong> for savings-style categories (car repairs, gifts, travel): budget you don't spend
+     moves into the next month, so $100 a month with nothing spent becomes $200 available. Each year starts fresh.</p>
   <form method="post" id="cat-form">
     <input type="hidden" name="csrf" value="{{ csrf_token() }}">
     <input type="hidden" name="action" value="save">
   </form>
   <table>
-    <thead><tr><th>Name</th><th>Type</th><th class="num">Order</th><th class="num">Used</th><th></th></tr></thead>
+    <thead><tr><th>Name</th><th>Type</th><th title="Unspent budget carries into the next month (the year starts fresh each January)">Carry over</th><th class="num">Order</th><th class="num">Used</th><th></th></tr></thead>
     {% for kind, title in [('income', 'INCOME'), ('expense', 'EXPENSE'), ('transfer', 'NON-BUDGET')] %}
     <tbody>
-      <tr class="section"><td colspan="5">{{ title }}</td></tr>
+      <tr class="section"><td colspan="6">{{ title }}</td></tr>
       {% for c in cats if c.kind == kind %}
         <tr>
           <td><input form="cat-form" name="name_{{ c.id }}" value="{{ c.name }}" required>
@@ -28,6 +30,7 @@
           <td><select form="cat-form" name="kind_{{ c.id }}">
             {% for k, l in [('income', 'Income'), ('expense', 'Expense'), ('transfer', 'Non-budget')] %}<option value="{{ k }}" {{ 'selected' if c.kind == k }}>{{ l }}</option>{% endfor %}
           </select></td>
+          <td>{% if kind == 'expense' %}<label class="small"><input form="cat-form" type="checkbox" name="rollover_{{ c.id }}" value="1" {{ 'checked' if c.rollover }}> carry over</label>{% endif %}</td>
           <td><input form="cat-form" name="sort_{{ c.id }}" value="{{ c.sort }}" class="tiny"></td>
           <td class="num muted">{{ counts.get(c.id, 0) }}</td>
           <td><button class="btn ghost small" form="del-{{ c.id }}">Delete</button></td>

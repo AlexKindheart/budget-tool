@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 import requests
 
 import db
+import duplicates
 
 PLAID_HOSTS = {
     "sandbox": "https://sandbox.plaid.com",
@@ -264,8 +265,13 @@ def sync_item(item_id):
                 acc = accounts.get(t["account_id"])
                 if acc:
                     _upsert_transaction(conn, t, acc)
-            conn.executemany("DELETE FROM transactions WHERE plaid_id = ?",
-                             [(r["transaction_id"],) for r in removed])
+            gone = [r["transaction_id"] for r in removed]
+            duplicates.bank_removed(conn, gone)  # your own entries folded into these come back
+            conn.executemany("DELETE FROM transactions WHERE plaid_id = ?", [(g,) for g in gone])
+            combined = sum(duplicates.match(conn, acc["id"]) for acc in accounts.values())
+            if combined:  # the Overview's To do card points them out until you've looked
+                unseen = int(db.get_setting(conn, "combined_unseen", "0") or 0)
+                db.set_setting(conn, "combined_unseen", str(unseen + combined))
             for acc in accounts.values():
                 refresh_opening_balance(conn, acc["id"])
             conn.execute(
@@ -317,4 +323,5 @@ def link_to_existing(bank_account_id, target_account_id):
             (src["plaid_account_id"], src["item_id"], src["mask"], src["bank_current"], src["bank_available"],
              sync_from, src["kind"], dst["id"]),
         )
+        duplicates.match(conn, dst["id"])  # e.g. checks you typed in that the bank has since cleared
         return sync_from

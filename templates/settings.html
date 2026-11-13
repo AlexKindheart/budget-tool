@@ -61,9 +61,92 @@
     <strong>Update Budget Tool</strong> from the Budget Tool folder. Updates only replace the program, never your data.{% endif %}</p>
 </section>
 
-<section class="card">
-  <h2>Your data</h2>
-  <p class="muted small">Stored only on this computer, in <code>{{ data_dir }}</code>.
-     The database includes your bank access tokens, so don't share that folder.</p>
+<section class="card" id="security">
+  <h2>Password and lock</h2>
+  {% if not protected %}
+  <div class="flash warn" role="alert"><strong>Your budget has no password.</strong> {{ warning }}</div>
+  <form method="post" action="{{ url_for('settings_password') }}" class="stack">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <div class="form-row"><label for="np">New password</label><input id="np" name="password" type="password" autocomplete="new-password" minlength="{{ min_len }}" required></div>
+    <div class="form-row"><label for="np2">New password again</label><input id="np2" name="confirm" type="password" autocomplete="new-password" minlength="{{ min_len }}" required></div>
+    <button class="btn primary">Set a password</button>
+  </form>
+  {% else %}
+  <p class="muted small">Your budget is encrypted with your password. Without it (or your recovery code) nobody can read
+     it, including on a copy of the folder. Budget Tool locks itself when it's closed and after a while without use.</p>
+  <div class="actions">
+    <a class="btn" href="{{ url_for('lock') }}">Lock now</a>
+    <form method="post" action="{{ url_for('settings_lock_after') }}" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <label class="small">Lock after
+        <select name="minutes" onchange="this.form.submit()">
+          {% for m in lock_choices %}<option value="{{ m }}" {{ 'selected' if m == lock_minutes }}>{{ (m ~ ' minutes without use') if m else 'only when closed' }}</option>{% endfor %}
+        </select></label>
+      <noscript><button class="btn small">Save</button></noscript>
+    </form>
+  </div>
+  <details>
+    <summary>Change your password</summary>
+    <form method="post" action="{{ url_for('settings_password') }}" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <div class="form-row"><label for="cur">Current password</label><input id="cur" name="current" type="password" autocomplete="current-password" required></div>
+      <div class="form-row"><label for="np">New password</label><input id="np" name="password" type="password" autocomplete="new-password" required></div>
+      <div class="form-row"><label for="np2">New password again</label><input id="np2" name="confirm" type="password" autocomplete="new-password" required></div>
+      <button class="btn primary">Change password</button>
+    </form>
+  </details>
+  <details>
+    <summary>Make a new recovery code</summary>
+    <p class="muted small">Your recovery code lets you set a new password if you forget yours. Make a new one if you've lost
+       it or think someone has seen it: the old one stops working.</p>
+    <form method="post" action="{{ url_for('settings_recovery_code') }}" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <div class="form-row"><label for="cur2">Your password</label><input id="cur2" name="current" type="password" autocomplete="current-password" required></div>
+      <button class="btn">Make a new recovery code</button>
+    </form>
+  </details>
+  <details>
+    <summary>Stop using a password</summary>
+    <div class="flash warn" role="alert"><strong>Not recommended.</strong> {{ warning }}</div>
+    <form method="post" action="{{ url_for('settings_remove_password') }}" class="stack">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <div class="form-row"><label for="cur4">Your password</label><input id="cur4" name="current" type="password" autocomplete="current-password" required></div>
+      <label class="small"><input type="checkbox" name="understand" value="1" required> I understand that without a password
+        my budget and bank information aren't protected</label>
+      <p><button class="btn">Remove my password</button></p>
+    </form>
+  </details>
+  {% endif %}
+</section>
+
+<section class="card" id="backups">
+  <h2>Backups</h2>
+  <p class="muted small">Budget Tool backs up your budget the first time you open it each day and keeps the last 30 of
+     those. {% if protected %}Backups are encrypted like the budget itself and open with your password, so it's safe to copy the
+     backups folder to a USB drive or cloud storage. Copy the whole folder: it has what's needed to open them.{% else %}
+     Without a password, anyone with the backups folder can open them too.{% endif %}</p>
+  <div class="actions">
+    <form method="post" action="{{ url_for('backups_now') }}" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="btn primary">Back up now</button></form>
+    <form method="post" action="{{ url_for('backups_open') }}" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><button class="btn">Open the backups folder</button></form>
+  </div>
+  {% if backups %}
+  <details>
+    <summary>Restore a backup ({{ backups|length }})</summary>
+    <p class="muted small">Restoring replaces your budget with the backup. Your budget as it is now is backed up first,
+       so you can undo it.</p>
+    <form method="post" action="{{ url_for('backups_restore') }}" class="stack"
+          onsubmit="return confirm('Replace your budget with this backup? Your budget as it is now is backed up first.')">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <div class="form-row"><label for="bk">Backup</label>
+        <select id="bk" name="name">{% for b in backups %}<option value="{{ b.name }}">{{ b.when.strftime('%b %d, %Y %I:%M %p') }} · {{ 'daily' if b.auto else b.name.rsplit('-', 1)[1][:-3].replace('-', ' ') }} · {{ (b.size / 1024)|round|int }} KB</option>{% endfor %}</select></div>
+      {% if protected %}<div class="form-row"><label for="cur3">Your password</label><input id="cur3" name="current" type="password" autocomplete="current-password" required></div>{% endif %}
+      <button class="btn">Restore</button>
+    </form>
+  </details>
+  {% endif %}
+  <p class="muted small">Your budget is in <code>{{ data_dir }}</code>, backups in <code>{{ backup_dir }}</code>.
+     Spreadsheets you export are not encrypted: keep them somewhere private.</p>
 </section>
 {% endblock %}

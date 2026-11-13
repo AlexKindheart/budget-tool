@@ -32,6 +32,11 @@ Uninstallable=no
 UsePreviousTasks=no
 OutputDir=release
 OutputBaseFilename=BudgetTool-Setup
+#ifdef SIGN
+; build-installer.bat passes the signing command from signing.bat (see signing.example.bat)
+SignTool=budgettool
+SignedUninstaller=no
+#endif
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

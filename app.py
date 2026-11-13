@@ -1,9 +1,11 @@
 """Budget Tool screens and actions (Flask). Shown inside the desktop window by budget_tool.py.
 
 The server only listens on 127.0.0.1 and every request needs the per-launch key
-(LAUNCH_KEY), so other programs and websites can't read your data.
+(LAUNCH_KEY), so other programs and websites can't read your data. On top of that the budget is encrypted and
+Budget Tool starts locked: nothing is read until you enter your password (security.py).
 """
 import io
+import json
 import os
 import secrets
 import subprocess
@@ -16,14 +18,16 @@ import webview
 from flask import (Flask, abort, flash, jsonify, redirect, render_template, request,
                    send_file, session, url_for)
 
+import bills
 import db
+import duplicates
 import export
+import paths
 import plaid_client as plaid
 import reports
+import security
 import updater
 from paths import DATA_DIR, RESOURCE_DIR
-
-db.init()
 
 app = Flask(__name__,
             template_folder=os.path.join(RESOURCE_DIR, "templates"),
@@ -36,6 +40,13 @@ BASE_URL = ""          # set by start_server()
 DATA_VERSION = [0]     # bumped when a bank is (re)connected, so the window knows to refresh
 STARTUP_SYNC = {"running": False, "changed": 0}  # the one bank sync each time Budget Tool opens
 WINDOW_MESSAGES = []   # messages from the browser sign-in, shown in the app window next time it loads
+LOCK = {"minutes": 15, "last_active": time.time(), "failures": 0, "started": False, "protected": True}
+NO_PASSWORD_WARNING = ("Without a password, anyone who uses this computer, or gets a copy of the Budget Tool folder or "
+                       "the USB drive it's on, can open your budget: every transaction, your account balances, and the "
+                       "connections to your bank. Banking information in the wrong hands is a bad idea.")
+LOCK_CHOICES = [5, 15, 30, 60, 0]  # minutes without use before Budget Tool locks itself (0 = only when closed)
+PASSWORD_GATE = threading.Lock()   # one password attempt at a time
+OPEN_WHILE_LOCKED = {"static", "unlock", "setup_password", "recover", "lock"}
 ACCOUNT_KINDS = ["checking", "savings", "credit", "loan", "cash", "other"]
 
 
@@ -62,6 +73,33 @@ def check_access():
 
 
 @app.before_request
+def require_unlock():
+    """Locked: only the password screens. Unlocked: lock again after a while without use."""
+    ep = request.endpoint
+    if not db.unlocked() and ep != "static" and security.is_set_up() and not security.has_password():
+        finish_unlock(security.open_key())  # you chose not to use a password: open straight away
+    if db.unlocked():
+        idle = LOCK["minutes"] * 60 if LOCK["protected"] else 0
+        if idle and time.time() - LOCK["last_active"] > idle + 30 and ep not in OPEN_WHILE_LOCKED:
+            lock_now()
+            flash(f"Budget Tool locked itself after {LOCK['minutes']} minutes without use.", "ok")
+        elif ep != "static" and (not request.path.startswith("/api/") or ep == "api_still_here"):
+            LOCK["last_active"] = time.time()
+    if db.unlocked() or ep in OPEN_WHILE_LOCKED:
+        return None
+    if request.path.startswith("/api/"):
+        return jsonify(error="Budget Tool is locked. Enter your password in the Budget Tool window.", locked=True), 401
+    nxt = request.full_path if request.method == "GET" else None
+    return redirect(url_for("unlock" if security.is_set_up() else "setup_password", next=nxt))
+
+
+@app.after_request
+def no_caching(resp):
+    resp.headers["Cache-Control"] = "no-store"  # nothing from your budget is kept in a browser cache
+    return resp
+
+
+@app.before_request
 def deliver_window_messages():
     if request.method == "GET" and request.args.get("browser") != "1" and not request.path.startswith(("/api/", "/static/")):
         while WINDOW_MESSAGES:
@@ -70,8 +108,12 @@ def deliver_window_messages():
 
 @app.context_processor
 def inject_globals():
-    return {"csrf_token": csrf_token, "plaid_env": plaid.env(), "plaid_ready": plaid.configured(),
-            "syncing": STARTUP_SYNC["running"],
+    if not db.unlocked():
+        return {"csrf_token": csrf_token, "locked": True, "plaid_env": None, "plaid_ready": False, "syncing": False,
+                "today": date.today(), "update": {}, "lock_minutes": 0}
+    return {"csrf_token": csrf_token, "locked": False, "plaid_env": plaid.env(), "plaid_ready": plaid.configured(),
+            "syncing": STARTUP_SYNC["running"], "protected": LOCK["protected"],
+            "lock_minutes": LOCK["minutes"] if LOCK["protected"] else 0,
             "today": date.today(), "update": updater.status()}
 
 
@@ -310,10 +352,16 @@ def todo_items(conn):
     for it in conn.execute("SELECT * FROM items WHERE error IS NOT NULL AND error != ''"):
         items.append((f"{it['institution_name'] or 'Your bank'} needs you to sign in again before it can sync.",
                       "Reconnect", url_for("accounts"), "warn"))
-    n = conn.execute("SELECT COUNT(*) FROM transactions WHERE category_id IS NULL AND is_opening = 0").fetchone()[0]
+    n = conn.execute("SELECT COUNT(*) FROM transactions t WHERE t.category_id IS NULL AND t.is_opening = 0 "
+                     "AND NOT EXISTS (SELECT 1 FROM splits s WHERE s.tx_id = t.id)").fetchone()[0]
     if n:
         items.append((f"{n} transaction{'' if n == 1 else 's'} need{'s' if n == 1 else ''} a category.", "Sort them",
                       url_for("register", month="all", category="none"), "todo"))
+    n = int(db.get_setting(conn, "combined_unseen", "0") or 0)
+    if n:
+        items.append((f"{n} bank transaction{' was' if n == 1 else 's were'} combined with one{'' if n == 1 else 's'} "
+                      "you typed in yourself, so they only count once.", "Check them",
+                      url_for("register", month="all", combined="1"), "todo"))
     balances = account_balances(conn)
     for a in conn.execute("SELECT * FROM accounts WHERE closed = 0 AND plaid_account_id IS NOT NULL"):
         bank = plaid.bank_balance_in_register_sign(a)
@@ -321,6 +369,21 @@ def todo_items(conn):
         if bank is not None and abs(bank - posted) > 0.005:
             items.append((f"{a['name']} doesn't match your bank (off by {money(bank - posted)}).", "Fix it",
                           url_for("accounts"), "warn"))
+    alerts = reports.budget_alerts(conn)
+    for a in alerts[:3]:
+        if a["over"]:
+            text = f"{a['name']} is over budget: {money(a['actual'])} spent of {money(a['budget'])}."
+        else:
+            text = (f"{a['name']}: {money(a['left'])} left with {a['days_left']} day{'' if a['days_left'] == 1 else 's'} "
+                    f"to go. At this pace you'll spend about {money(a['pace'])} of {money(a['budget'])}.")
+        items.append((text, "See spending", url_for("register", month=reports.month_key(date.today()), category=a["id"]),
+                      "warn" if a["over"] else "todo"))
+    if len(alerts) > 3:
+        items.append((f"{len(alerts) - 3} more categor{'y is' if len(alerts) == 4 else 'ies are'} over or close to the budget.",
+                      "Report", url_for("reports_page"), "todo"))
+    for d in old_copies(conn):
+        items.append((f"An old, unencrypted copy of your budget is still on this computer, in {d}.", "Review",
+                      url_for("old_copy"), "warn"))
     month = reports.month_key(date.today())
     if (conn.execute("SELECT 1 FROM budgets").fetchone()
             and not conn.execute("SELECT 1 FROM budgets WHERE month = ?", (month,)).fetchone()):
@@ -346,10 +409,13 @@ def overview():
         has_items = conn.execute("SELECT 1 FROM items").fetchone() is not None
         plan_year = year_plan_prompt(conn)
         steps, todo = setup_steps(conn), todo_items(conn)
+        bills.refresh(conn)
+        coming = bills.upcoming(conn, 30)
+        safe = bills.safe_to_spend(conn, balances) if conn.execute("SELECT 1 FROM bills").fetchone() else None
     return render_template(
         "overview.html", p=p, month=reports.month_key(p["start"] if p["period"] == "month" else date.today()),
         rep=rep, trend=trend, accounts=accounts, balances=balances, recent=recent, last_synced=synced,
-        has_items=has_items, plan_year=plan_year, steps=steps, todo=todo)
+        has_items=has_items, plan_year=plan_year, steps=steps, todo=todo, coming=coming[:8], safe=safe)
 
 
 # ---------------------------------------------------------------- register (Transactions sheet)
@@ -361,6 +427,7 @@ def register():
     cat = request.args.get("category", "")
     q = request.args.get("q", "").strip()
     uncleared = request.args.get("uncleared") == "1"
+    combined = request.args.get("combined") == "1"
 
     where, params = ["1=1"], []
     # month=range&from=YYYY-MM-DD&to=YYYY-MM-DD: a date span (links from the Overview's year / week / all time).
@@ -382,16 +449,18 @@ def register():
         where.append("t.account_id = ?")
         params.append(int(account))
     if cat == "none":
-        where.append("t.category_id IS NULL")
-    elif cat.isdigit():
-        where.append("t.category_id = ?")
-        params.append(int(cat))
+        where.append("t.category_id IS NULL AND NOT EXISTS (SELECT 1 FROM splits s WHERE s.tx_id = t.id)")
+    elif cat.isdigit():  # a split transaction shows up under each of its parts' categories
+        where.append("(t.category_id = ? OR EXISTS (SELECT 1 FROM splits s WHERE s.tx_id = t.id AND s.category_id = ?))")
+        params += [int(cat), int(cat)]
     if q:
         like = "%" + q.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "%"
         where.append("(t.payee LIKE ? ESCAPE '!' OR t.memo LIKE ? ESCAPE '!' OR t.bank_name LIKE ? ESCAPE '!')")
         params += [like, like, like]
     if uncleared:  # "Pending only": bank charges that haven't posted yet
         where.append("t.cleared = '' AND t.plaid_id IS NOT NULL")
+    if combined:  # bank transactions combined with your own entries
+        where.append("t.merged IS NOT NULL")
 
     with db.connect() as conn:
         txs = conn.execute(
@@ -406,7 +475,12 @@ def register():
             running[r["id"]] = totals[r["account_id"]]
         categories = all_categories(conn)
         accounts = all_accounts(conn)
-        suggest = category_suggestions(conn, [t for t in txs if t["category_id"] is None and not t["is_opening"]])
+        parts = split_parts(conn, [t["id"] for t in txs])
+        suggest = category_suggestions(conn, [t for t in txs if t["category_id"] is None and not t["is_opening"]
+                                              and t["id"] not in parts])
+        merged_notes = {t["id"]: duplicates.describe(t) for t in txs if t["merged"]}
+        if combined:
+            db.set_setting(conn, "combined_unseen", "0")  # you've seen them
     month_d = parse_month(month_raw) if month_raw not in ("all", "range") else date.today().replace(day=1)
     if span:
         label = f"{span[0]:%b} {span[0].day}, {span[0].year} – {span[1]:%b} {span[1].day}, {span[1].year}"
@@ -416,9 +490,25 @@ def register():
         "register.html", txs=txs, running=running, categories=categories, accounts=accounts,
         month=month_raw, label=label, span=span,
         prev=reports.month_key(reports.add_months(month_d, -1)), nxt=reports.month_key(reports.add_months(month_d, 1)),
-        account=account, cat=cat, q=q, uncleared=uncleared, suggest=suggest,
+        account=account, cat=cat, q=q, uncleared=uncleared, suggest=suggest, combined=combined,
+        merged_notes=merged_notes, parts=parts,
         total_in=sum(t["amount"] for t in txs if t["amount"] > 0),
         total_out=-sum(t["amount"] for t in txs if t["amount"] < 0))
+
+
+def split_parts(conn, tx_ids):
+    """{transaction id: [{category, category_id, amount, memo}]} for the split ones among tx_ids."""
+    out = {}
+    ids = list(tx_ids)
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        for r in conn.execute(
+                f"""SELECT s.*, c.name AS category FROM splits s LEFT JOIN categories c ON c.id = s.category_id
+                    WHERE s.tx_id IN ({",".join("?" * len(chunk))}) ORDER BY s.id""", chunk):
+            out.setdefault(r["tx_id"], []).append(
+                {"category": r["category"] or "Uncategorized", "category_id": r["category_id"], "amount": r["amount"],
+                 "memo": r["memo"] or ""})
+    return out
 
 
 def _tx_from_form(conn):
@@ -455,8 +545,13 @@ def register_add():
             """INSERT INTO transactions (account_id, date, payee, memo, amount, category_id, cleared,
                                          category_locked, payee_locked) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)""",
             (t["account_id"], t["date"], t["payee"], t["memo"], t["amount"], t["category_id"], t["cleared"]))
+        combined = duplicates.match(conn, t["account_id"])
         plaid.refresh_opening_balance(conn, t["account_id"])
-    flash("Transaction added.", "ok")
+    if combined:
+        flash("Added. Your bank had already sent this one, so the two were combined and it only counts once "
+              "(look for the \"combined\" label; Not the same splits them).", "ok")
+    else:
+        flash("Transaction added.", "ok")
     return back("register")
 
 
@@ -473,7 +568,11 @@ def register_edit(tx_id):
                 if tx["plaid_id"]:  # the bank owns date/amount/account; you own payee/memo/category
                     t.update(account_id=tx["account_id"], date=tx["date"], amount=tx["amount"])
                 same_side = (t["amount"] > 0) == (tx["amount"] > 0)
-                check_category(conn, t["category_id"], t["amount"], tx["category_id"] if same_side else None, t["date"])
+                is_split = bool(split_parts(conn, [tx_id]))
+                if is_split:
+                    t["category_id"] = None  # the parts have the categories
+                else:
+                    check_category(conn, t["category_id"], t["amount"], tx["category_id"] if same_side else None, t["date"])
             except ValueError as e:
                 flash(str(e), "error")
                 return redirect(url_for("register_edit", tx_id=tx_id, next=request.form.get("next")))
@@ -482,12 +581,18 @@ def register_edit(tx_id):
                    cleared=?, category_locked=1, payee_locked=1 WHERE id=?""",
                 (t["account_id"], t["date"], t["payee"], t["memo"], t["amount"], t["category_id"], t["cleared"], tx_id))
             flash("Saved.", "ok")
+            if is_split and abs(t["amount"] - tx["amount"]) > 0.005:
+                conn.execute("DELETE FROM splits WHERE tx_id = ?", (tx_id,))
+                flash("The amount changed, so the split was removed. Pick a category or split it again.", "error")
+            if not tx["plaid_id"] and duplicates.match(conn, t["account_id"]):
+                flash("Your bank had already sent this one, so the two were combined and it only counts once.", "ok")
             for acc_id in {tx["account_id"], t["account_id"]}:
                 plaid.refresh_opening_balance(conn, acc_id)
             return redirect(request.form.get("next") or url_for("register"))
         categories = all_categories(conn)
         accounts = all_accounts(conn)
-    return render_template("tx_edit.html", tx=tx, categories=categories, accounts=accounts,
+        parts = split_parts(conn, [tx_id]).get(tx_id, [])
+    return render_template("tx_edit.html", tx=tx, categories=categories, accounts=accounts, parts=parts,
                            next=request.args.get("next") or url_for("register"))
 
 
@@ -505,6 +610,90 @@ def register_delete(tx_id):
     return redirect(request.form.get("next") or url_for("register"))
 
 
+@app.post("/register/<int:tx_id>/split")
+def register_split(tx_id):
+    """"Not the same": a bank transaction that was combined with your own entry is split back into two."""
+    with db.connect() as conn:
+        tx = conn.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+        if tx and duplicates.split(conn, tx_id):
+            plaid.refresh_opening_balance(conn, tx["account_id"])
+            flash("Split back into your entry and the bank's. They won't be combined again.", "ok")
+    return redirect(request.form.get("next") or url_for("register"))
+
+
+@app.post("/register/bulk-category")
+def register_bulk_category():
+    """Give several transactions the same category at once (the ticked rows on the Register)."""
+    ids = [int(i) for i in request.form.getlist("ids") if i.isdigit()]
+    raw = request.form.get("category_id", "")
+    category_id = int(raw) if raw.isdigit() else None
+    done, skipped = 0, []
+    with db.connect() as conn:
+        for i in ids:
+            tx = conn.execute("SELECT * FROM transactions WHERE id = ?", (i,)).fetchone()
+            if not tx or tx["is_opening"] or split_parts(conn, [i]):
+                skipped.append(i)
+                continue
+            try:
+                check_category(conn, category_id, tx["amount"], tx["category_id"], tx["date"])
+            except ValueError:
+                skipped.append(i)
+                continue
+            conn.execute("UPDATE transactions SET category_id = ?, category_locked = 1 WHERE id = ?", (category_id, i))
+            done += 1
+    if not ids:
+        flash("Tick the transactions to change first.", "error")
+    else:
+        flash(f"Changed {done} transaction{'' if done == 1 else 's'}." + (
+            f" {len(skipped)} didn't fit that category (a deposit needs an income category, a payment an expense one,"
+            " split ones are changed on their own) and were left as they were." if skipped else ""),
+            "ok" if done else "error")
+    return back("register")
+
+
+@app.post("/register/<int:tx_id>/splits")
+def register_splits(tx_id):
+    """Split one transaction across several categories, or stop splitting it."""
+    edit = url_for("register_edit", tx_id=tx_id, next=request.form.get("next") or None)
+    with db.connect() as conn:
+        tx = conn.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+        if not tx or tx["is_opening"]:
+            abort(404)
+        if request.form.get("action") == "remove":
+            conn.execute("DELETE FROM splits WHERE tx_id = ?", (tx_id,))
+            flash("No longer split. Pick a category for it.", "ok")
+            return redirect(edit)
+        parts = []
+        try:
+            for c, a, m in zip(request.form.getlist("split_category"), request.form.getlist("split_amount"),
+                               request.form.getlist("split_memo")):
+                amount = parse_money(a)
+                if not c and not amount:
+                    continue  # an empty row
+                if not c.isdigit() or not amount:
+                    raise ValueError("Each part needs a category and an amount.")
+                if amount <= 0:
+                    raise ValueError("Enter each part as a positive amount; it takes the transaction's side.")
+                check_category(conn, int(c), tx["amount"], None, tx["date"])
+                parts.append((int(c), round(amount, 2), m.strip()))
+            if len(parts) < 2:
+                raise ValueError("A split needs at least two parts.")
+            total, whole = round(sum(a for _, a, _ in parts), 2), round(abs(tx["amount"]), 2)
+            if abs(total - whole) > 0.005:
+                raise ValueError(f"The parts add up to {money(total)}, but the transaction is {money(whole)} "
+                                 f"({money(abs(whole - total))} {'left to split' if total < whole else 'too much'}).")
+        except ValueError as e:
+            flash(str(e), "error")
+            return redirect(edit)
+        sign = 1 if tx["amount"] > 0 else -1
+        conn.execute("DELETE FROM splits WHERE tx_id = ?", (tx_id,))
+        conn.executemany("INSERT INTO splits (tx_id, category_id, amount, memo) VALUES (?, ?, ?, ?)",
+                         [(tx_id, c, sign * a, m) for c, a, m in parts])
+        conn.execute("UPDATE transactions SET category_id = NULL, category_locked = 1 WHERE id = ?", (tx_id,))
+    flash(f"Split into {len(parts)} parts.", "ok")
+    return redirect(request.form.get("next") or url_for("register"))
+
+
 @app.post("/register/<int:tx_id>/category")
 def register_category(tx_id):
     cat_raw = request.form.get("category_id", "")
@@ -515,6 +704,8 @@ def register_category(tx_id):
             abort(404)
         quiet = request.headers.get("X-Requested-With") == "fetch"  # changed in place on the Register, no reload
         try:
+            if split_parts(conn, [tx_id]):
+                raise ValueError("This transaction is split. Open it (Edit) to change its parts.")
             check_category(conn, category_id, tx["amount"], tx["category_id"], tx["date"])
         except ValueError as e:
             if quiet:
@@ -607,6 +798,20 @@ def budget():
 def reports_page():
     view = request.args.get("view", "monthly")
     with db.connect() as conn:
+        if view == "payees":
+            if request.args.get("month"):
+                first = parse_month(request.args.get("month"))
+                start, end, label = first, reports.add_months(first, 1) - timedelta(days=1), first.strftime("%B %Y")
+                prev = url_for("reports_page", view="payees", month=reports.month_key(reports.add_months(first, -1)))
+                nxt = url_for("reports_page", view="payees", month=reports.month_key(reports.add_months(first, 1)))
+            else:
+                year = int(request.args.get("year") or date.today().year)
+                start, end, label = date(year, 1, 1), date(year, 12, 31), str(year)
+                prev, nxt = url_for("reports_page", view="payees", year=year - 1), url_for("reports_page", view="payees", year=year + 1)
+            rows = reports.payees(conn, start, end)
+            return render_template("reports.html", view=view, payees=rows, label=label, prev=prev, nxt=nxt,
+                                   start=start, end=end, by_month=bool(request.args.get("month")),
+                                   total=sum(r["spent"] for r in rows))
         if view == "yearly":
             year = int(request.args.get("year") or date.today().year)
             data = reports.yearly(conn, year)  # balances come from your accounts, not the Budget screen's estimate
@@ -739,9 +944,10 @@ def categories_page():
                         if db.name_clash(conn, name, me["active_from"], me["active_until"], ignore_id=i):
                             flash(f"There's already a category called \"{name}\" in the same years.", "error")
                             continue
-                        conn.execute("UPDATE categories SET name=?, kind=?, sort=? WHERE id=?",
+                        conn.execute("UPDATE categories SET name=?, kind=?, sort=?, rollover=? WHERE id=?",
                                      (name, kind if kind in ("income", "expense", "transfer") else "expense",
-                                      int(parse_money(request.form.get(f"sort_{i}")) or 0), i))
+                                      int(parse_money(request.form.get(f"sort_{i}")) or 0),
+                                      1 if request.form.get(f"rollover_{i}") == "1" else 0, i))
                 flash("Categories saved.", "ok")
             elif action == "add":
                 name = request.form.get("name", "").strip()
@@ -757,8 +963,191 @@ def categories_page():
             return redirect(url_for("categories_page"))
         cats = all_categories(conn)
         counts = {r["category_id"]: r["n"] for r in conn.execute(
-            "SELECT category_id, COUNT(*) AS n FROM transactions GROUP BY category_id")}
+            "SELECT category_id, COUNT(*) AS n FROM lines GROUP BY category_id")}
     return render_template("categories.html", cats=cats, counts=counts, next_year=date.today().year + 1)
+
+
+# ---------------------------------------------------------------- bills and paychecks that repeat
+
+@app.route("/bills", methods=["GET", "POST"])
+def bills_page():
+    with db.connect() as conn:
+        if request.method == "POST":
+            action = request.form.get("action")
+            if action == "delete":
+                conn.execute("DELETE FROM bills WHERE id = ?", (int(request.form.get("id", 0) or 0),))
+                flash("Removed.", "ok")
+                return redirect(url_for("bills_page"))
+            try:
+                name = request.form.get("name", "").strip()
+                amount = parse_money(request.form.get("amount"))
+                every = request.form.get("every", "month")
+                kind = "income" if request.form.get("kind") == "income" else "bill"
+                acc, cat = request.form.get("account_id", ""), request.form.get("category_id", "")
+                if not name:
+                    raise ValueError("Give it a name.")
+                if not amount or amount <= 0:
+                    raise ValueError("Enter the amount (a positive number).")
+                if every not in dict(bills.EVERY):
+                    raise ValueError("Pick how often it repeats.")
+                try:
+                    nxt = date.fromisoformat(request.form.get("next_date", "")).isoformat()
+                except ValueError:
+                    raise ValueError("Enter the next date it's due.")
+                values = (name, round(abs(amount), 2), kind, int(acc) if acc.isdigit() else None,
+                          int(cat) if cat.isdigit() else None, every, nxt)
+            except ValueError as e:
+                flash(str(e), "error")
+                return redirect(url_for("bills_page"))
+            if action == "save" and request.form.get("id", "").isdigit():
+                conn.execute("""UPDATE bills SET name=?, amount=?, kind=?, account_id=?, category_id=?, every=?,
+                                next_date=? WHERE id=?""", values + (int(request.form["id"]),))
+                flash("Saved.", "ok")
+            else:
+                conn.execute("""INSERT INTO bills (name, amount, kind, account_id, category_id, every, next_date)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)""", values)
+                flash(f"Added {name}.", "ok")
+            return redirect(url_for("bills_page"))
+        bills.refresh(conn)
+        rows = conn.execute("""SELECT b.*, a.name AS account, c.name AS category FROM bills b
+                               LEFT JOIN accounts a ON a.id = b.account_id LEFT JOIN categories c ON c.id = b.category_id
+                               ORDER BY b.kind DESC, b.next_date, lower(b.name)""").fetchall()
+        prefill = None
+        src = request.args.get("from_tx", "")
+        if src.isdigit():  # "Make this a repeating bill" from a transaction
+            t = conn.execute("SELECT * FROM transactions WHERE id = ?", (int(src),)).fetchone()
+            if t:
+                prefill = {"name": t["payee"] or "", "amount": abs(t["amount"]),
+                           "kind": "income" if t["amount"] > 0 else "bill", "account_id": t["account_id"],
+                           "category_id": t["category_id"], "every": "month",
+                           "next_date": bills.step(date.fromisoformat(t["date"][:10]), "month")}
+        coming = bills.upcoming(conn, 30)
+        safe = bills.safe_to_spend(conn, account_balances(conn))
+        categories = all_categories(conn)
+        accounts = all_accounts(conn, include_closed=False)
+    return render_template("bills.html", rows=rows, coming=coming, safe=safe, categories=categories,
+                           accounts=accounts, every=bills.EVERY, prefill=prefill)
+
+
+# ---------------------------------------------------------------- balancing a hand-kept account against a statement
+
+@app.route("/accounts/<int:account_id>/reconcile", methods=["GET", "POST"])
+def reconcile(account_id):
+    with db.connect() as conn:
+        acc = conn.execute("SELECT * FROM accounts WHERE id = ?", (account_id,)).fetchone()
+        if not acc:
+            abort(404)
+        if acc["plaid_account_id"]:
+            flash("Accounts linked to your bank stay in step with it on their own, so there's nothing to balance.", "error")
+            return redirect(url_for("accounts"))
+        done = conn.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE account_id = ? AND cleared = 'R'",
+                            (account_id,)).fetchone()[0]
+        if request.method == "POST":
+            stmt = parse_money(request.form.get("balance"))
+            try:
+                stmt_date = date.fromisoformat(request.form.get("date", "")).isoformat()
+            except ValueError:
+                stmt_date = date.today().isoformat()
+            ids = [int(i) for i in request.form.getlist("ids") if i.isdigit()]
+            rows = conn.execute(
+                f"""SELECT id, amount FROM transactions WHERE account_id = ? AND cleared != 'R' AND date <= ?
+                    AND id IN ({",".join("?" * len(ids)) or "NULL"})""", [account_id, stmt_date] + ids).fetchall()
+            ticked = sum(r["amount"] for r in rows)
+            back_to = url_for("reconcile", account_id=account_id, date=stmt_date, balance=request.form.get("balance"))
+            if stmt is None:
+                flash("Enter the statement's ending balance.", "error")
+                return redirect(back_to)
+            off = round(done + ticked - stmt, 2)
+            if abs(off) > 0.005:
+                flash(f"Not balanced yet: the ticked transactions come to {money(done + ticked)}, the statement says "
+                      f"{money(stmt)} (off by {money(off)}).", "error")
+                return redirect(back_to)
+            conn.executemany("UPDATE transactions SET cleared = 'R' WHERE id = ?", [(r["id"],) for r in rows])
+            db.set_setting(conn, f"reconciled_{account_id}", json.dumps({"date": stmt_date, "balance": stmt}))
+            flash(f"{acc['name']} matches your statement of {stmt_date}. Those {len(rows)} transactions are marked "
+                  "reconciled.", "ok")
+            return redirect(url_for("accounts"))
+        stmt_date = request.args.get("date") or date.today().isoformat()
+        rows = conn.execute("SELECT * FROM transactions WHERE account_id = ? AND cleared != 'R' AND date <= ? "
+                            "ORDER BY date, id", (account_id, stmt_date)).fetchall()
+        try:
+            last = json.loads(db.get_setting(conn, f"reconciled_{account_id}") or "null")
+        except ValueError:
+            last = None
+    return render_template("reconcile.html", acc=acc, rows=rows, done=round(done, 2), stmt_date=stmt_date,
+                           balance=request.args.get("balance", ""), last=last)
+
+
+# ---------------------------------------------------------------- an old unencrypted copy from the installed version
+
+OLD_COPY_FILES = ("budget.db", "budget.db-wal", "budget.db-shm")
+
+
+def old_copies(conn):
+    """Folders from an older installed version that still hold an unencrypted copy of the budget (and that you
+    haven't said to keep)."""
+    try:
+        kept = set(json.loads(db.get_setting(conn, "old_copy_kept") or "[]"))
+    except ValueError:
+        kept = set()
+    mine = conn.execute("SELECT COUNT(*), MAX(date) FROM transactions").fetchone()
+    out = []
+    for d in paths.old_data_dirs():
+        if d not in kept and db.is_plaintext(os.path.join(d, "budget.db")) and _copied_already(d, mine):
+            out.append(d)
+    return out
+
+
+def _copied_already(folder, mine):
+    """Does your budget already have everything the old copy has (at least as many transactions, up to at least the
+    same date)? If not, it may hold history you'd lose, so Budget Tool never offers to delete it. Read-only."""
+    import sqlite3 as plain_sqlite
+    try:
+        old = plain_sqlite.connect(f"file:{os.path.join(folder, 'budget.db')}?mode=ro", uri=True)
+        try:
+            n, last = old.execute("SELECT COUNT(*), MAX(date) FROM transactions").fetchone()
+        finally:
+            old.close()
+    except plain_sqlite.Error:
+        return False
+    return (mine[0] or 0) >= (n or 0) and (mine[1] or "") >= (last or "")
+
+
+def _old_copy_files(folder):
+    names = [n for n in os.listdir(folder) if n in OLD_COPY_FILES or (n.startswith("budget.db.v") and "-backup-" in n)]
+    return [os.path.join(folder, n) for n in sorted(names)]
+
+
+@app.route("/old-copy", methods=["GET", "POST"])
+def old_copy():
+    with db.connect() as conn:
+        folders = old_copies(conn)
+        if request.method == "POST":
+            folder = request.form.get("folder", "")
+            if folder not in folders:  # only ever a folder this screen listed
+                return redirect(url_for("old_copy"))
+            if request.form.get("action") == "keep":
+                try:
+                    kept = json.loads(db.get_setting(conn, "old_copy_kept") or "[]")
+                except ValueError:
+                    kept = []
+                db.set_setting(conn, "old_copy_kept", json.dumps(sorted(set(kept) | {folder})))
+                flash("Kept. Budget Tool won't mention it again.", "ok")
+            else:
+                gone, failed = 0, []
+                for f in _old_copy_files(folder):
+                    try:
+                        os.remove(f)
+                        gone += 1
+                    except OSError:
+                        failed.append(os.path.basename(f))
+                if failed:
+                    flash(f"Couldn't delete {', '.join(failed)}. Is the old version of Budget Tool still open?", "error")
+                else:
+                    flash(f"Deleted the old copy ({gone} file{'' if gone == 1 else 's'}).", "ok")
+            return redirect(url_for("overview"))
+        found = [{"folder": d, "files": [os.path.basename(f) for f in _old_copy_files(d)]} for d in folders]
+    return render_template("old_copy.html", found=found)
 
 
 # ---------------------------------------------------------------- planning categories for a new year
@@ -795,7 +1184,7 @@ def year_plan_later():
 def plan_rows(conn, year):
     """The categories used in `year` that can be planned (the two built-in non-budget ones are left alone)."""
     counts = {r["category_id"]: r["n"] for r in conn.execute(
-        "SELECT category_id, COUNT(*) AS n FROM transactions WHERE date >= ? GROUP BY category_id", (f"{year}-01-01",))}
+        "SELECT category_id, COUNT(*) AS n FROM lines WHERE date >= ? GROUP BY category_id", (f"{year}-01-01",))}
     budgeted = {r["category_id"] for r in conn.execute("SELECT DISTINCT category_id FROM budgets WHERE month >= ?", (f"{year}-01",))}
     return [dict(c, later_tx=counts.get(c["id"], 0), budgeted=c["id"] in budgeted)
             for c in reports.categories_in_year(conn, year) if c["name"] not in SYSTEM_CATEGORIES]
@@ -838,6 +1227,8 @@ def apply_year_plan(conn, year, form):
                 conn.execute("UPDATE categories SET active_until = ? WHERE id = ?", (year - 1, c["id"]))
                 conn.execute("DELETE FROM budgets WHERE category_id = ? AND month >= ?", (c["id"], f"{year}-01"))
                 conn.execute("UPDATE transactions SET category_id = NULL WHERE category_id = ? AND date >= ?", (c["id"], start))
+                conn.execute("UPDATE splits SET category_id = NULL WHERE category_id = ? AND tx_id IN "
+                             "(SELECT id FROM transactions WHERE date >= ?)", (c["id"], start))
             summary.append(f"Retired \"{c['name']}\"" + (f" ({c['later_tx']} {year}+ transactions are now uncategorized)" if c["later_tx"] else ""))
         elif name != c["name"] or kind != c["kind"]:
             if only_from_this_year:
@@ -849,6 +1240,8 @@ def apply_year_plan(conn, year, form):
                 conn.execute("UPDATE categories SET active_until = ? WHERE id = ?", (year - 1, c["id"]))
                 conn.execute("UPDATE budgets SET category_id = ? WHERE category_id = ? AND month >= ?", (new_id, c["id"], f"{year}-01"))
                 conn.execute("UPDATE transactions SET category_id = ? WHERE category_id = ? AND date >= ?", (new_id, c["id"], start))
+                conn.execute("UPDATE splits SET category_id = ? WHERE category_id = ? AND tx_id IN "
+                             "(SELECT id FROM transactions WHERE date >= ?)", (new_id, c["id"], start))
             change = []
             if name != c["name"]:
                 change.append(f"renamed to \"{name}\"")
@@ -1008,8 +1401,267 @@ def settings():
         "settings.html",
         client_id=plaid.cfg("plaid_client_id"), has_secret=bool(plaid.cfg("plaid_secret")),
         env=plaid.env(), countries=plaid.cfg("plaid_country_codes"),
-        data_dir=DATA_DIR,
+        data_dir=DATA_DIR, backups=security.backups(), backup_dir=security.BACKUP_DIR,
+        lock_choices=LOCK_CHOICES, warning=NO_PASSWORD_WARNING, min_len=security.MIN_PASSWORD,
     )
+
+
+# ---------------------------------------------------------------- password lock
+
+def safe_next(default=None):
+    """Only go back to a page of Budget Tool itself."""
+    nxt = request.values.get("next") or ""
+    if nxt.startswith("/") and not nxt.startswith("//") and "\\" not in nxt:
+        return nxt
+    return default or url_for("overview")
+
+
+def check_password(password, recovery=False):
+    """The key if the password (or recovery code) is right. Repeated wrong guesses are slowed down."""
+    with PASSWORD_GATE:
+        if LOCK["failures"] >= 5:
+            time.sleep(min(30, 2 ** (LOCK["failures"] - 5)))
+        try:
+            key = security.unlock_with_code(password) if recovery else security.unlock(password)
+        except security.WrongPassword:
+            LOCK["failures"] += 1
+            return None
+        LOCK["failures"] = 0
+        return key
+
+
+def lock_now():
+    db.clear_key()
+
+
+def confirm_identity():
+    """The key, if the form's "current" password is right. Without a password there's nothing to confirm."""
+    if not security.has_password():
+        return security.open_key()
+    return check_password(request.form.get("current", ""))
+
+
+def finish_unlock(key):
+    """The password was right: encrypt anything still unencrypted, open the budget, back it up (once a day), and
+    the first time since Budget Tool opened, sync with your bank."""
+    db.encrypt_existing(key)
+    db.set_key(key)
+    LOCK["protected"] = security.has_password()
+    db.init()
+    with db.connect() as conn:
+        combined = duplicates.match(conn)
+        if combined:
+            unseen = int(db.get_setting(conn, "combined_unseen", "0") or 0)
+            db.set_setting(conn, "combined_unseen", str(unseen + combined))
+        try:
+            LOCK["minutes"] = int(db.get_setting(conn, "lock_after_minutes", "15"))
+        except ValueError:
+            LOCK["minutes"] = 15
+        has_banks = conn.execute("SELECT 1 FROM items").fetchone() is not None
+    try:
+        security.daily_backup()
+    except Exception as e:  # never stop you getting in; Settings shows the backups
+        print(f"[backup] failed: {e}")
+        flash(f"Today's backup couldn't be made ({e}). Try Back up now on the Settings screen.", "error")
+    LOCK["last_active"] = time.time()
+    if not LOCK["started"]:
+        LOCK["started"] = True
+        if has_banks and plaid.configured():
+            STARTUP_SYNC["running"] = True
+            threading.Thread(target=startup_sync, daemon=True).start()
+
+
+@app.route("/unlock", methods=["GET", "POST"])
+def unlock():
+    if not security.is_set_up():
+        return redirect(url_for("setup_password"))
+    if db.unlocked():
+        return redirect(safe_next())
+    if request.method == "POST":
+        key = check_password(request.form.get("password", ""))
+        if key is None:
+            flash("That password isn't right.", "error")
+            return redirect(url_for("unlock", next=request.form.get("next") or None))
+        finish_unlock(key)
+        return redirect(safe_next())
+    return render_template("lock.html", mode="unlock", next=request.args.get("next", ""))
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup_password():
+    """First time (or the first time after this update): choose a password. Your data is encrypted with it."""
+    if security.is_set_up():
+        return redirect(url_for("unlock"))
+    existing = os.path.exists(db.DB_PATH)
+    if request.method == "POST" and request.form.get("action") == "none":
+        if request.form.get("understand") != "1":
+            flash("Tick the box to say you understand the risk, or choose a password.", "error")
+            return redirect(url_for("setup_password"))
+        with PASSWORD_GATE:
+            if not security.is_set_up():
+                key, _ = security.create(None)
+                finish_unlock(key)
+        flash("Budget Tool opens without a password. You can add one any time in Settings → Password and lock.", "ok")
+        return redirect(url_for("overview"))
+    if request.method == "POST":
+        pw, confirm = request.form.get("password", ""), request.form.get("confirm", "")
+        problem = security.password_problem(pw, confirm)
+        if problem:
+            flash(problem, "error")
+            return redirect(url_for("setup_password"))
+        with PASSWORD_GATE:
+            if security.is_set_up():
+                return redirect(url_for("unlock"))
+            key, code = security.create(pw)
+            try:
+                finish_unlock(key)
+            except Exception:
+                for f in (security.LOCK_PATH, os.path.join(security.BACKUP_DIR, "lock.json")):
+                    if os.path.exists(f):
+                        os.remove(f)
+                db.clear_key()
+                raise
+        return render_template("lock.html", mode="code", code=code, first=True)
+    return render_template("lock.html", mode="setup", existing=existing, min_len=security.MIN_PASSWORD,
+                           warning=NO_PASSWORD_WARNING)
+
+
+@app.route("/recover", methods=["GET", "POST"])
+def recover():
+    """Forgot your password: your recovery code lets you set a new one."""
+    if not security.is_set_up():
+        return redirect(url_for("setup_password"))
+    if not security.has_password():
+        return redirect(url_for("overview"))
+    if request.method == "POST":
+        pw, confirm = request.form.get("password", ""), request.form.get("confirm", "")
+        problem = security.password_problem(pw, confirm)
+        if problem:
+            flash(problem, "error")
+            return redirect(url_for("recover"))
+        key = check_password(request.form.get("code", ""), recovery=True)
+        if key is None:
+            flash("That recovery code isn't right.", "error")
+            return redirect(url_for("recover"))
+        security.set_password(key, pw)
+        finish_unlock(key)
+        flash("New password set. Your recovery code still works; make a new one on the Settings screen if you "
+              "think someone else has seen it.", "ok")
+        return redirect(url_for("overview"))
+    return render_template("lock.html", mode="recover", min_len=security.MIN_PASSWORD)
+
+
+@app.get("/lock")
+def lock():
+    if db.unlocked() and not LOCK["protected"]:
+        flash("Budget Tool has no password, so it can't lock. Add one below.", "error")
+        return redirect(url_for("settings") + "#security")
+    if db.unlocked():
+        lock_now()
+        if request.args.get("idle"):
+            flash(f"Budget Tool locked itself after {LOCK['minutes']} minutes without use.", "ok")
+    return redirect(url_for("unlock"))
+
+
+@app.get("/api/still-here")
+def api_still_here():
+    """The window says you're using it (typing, scrolling), so the automatic lock waits."""
+    return jsonify(ok=True)
+
+
+@app.post("/settings/password")
+def settings_password():
+    pw, confirm = request.form.get("password", ""), request.form.get("confirm", "")
+    if not security.has_password():  # adding a password to a budget that had none
+        problem = security.password_problem(pw, confirm)
+        if problem:
+            flash(problem, "error")
+            return redirect(url_for("settings") + "#security")
+        code = security.add_password(security.open_key(), pw)
+        LOCK["protected"], LOCK["last_active"] = True, time.time()
+        return render_template("lock.html", mode="code", code=code, first=False, added=True)
+    key = check_password(request.form.get("current", ""))
+    if key is None:
+        flash("Your current password isn't right, so nothing was changed.", "error")
+    elif security.password_problem(pw, confirm):
+        flash(security.password_problem(pw, confirm), "error")
+    else:
+        security.set_password(key, pw)
+        flash("Password changed. Use the new one from now on (your backups open with it too).", "ok")
+    return redirect(url_for("settings") + "#security")
+
+
+@app.post("/settings/remove-password")
+def settings_remove_password():
+    if request.form.get("understand") != "1":
+        flash("Tick the box to say you understand the risk. Your password was kept.", "error")
+        return redirect(url_for("settings") + "#security")
+    key = check_password(request.form.get("current", ""))
+    if key is None:
+        flash("That password isn't right, so it was kept.", "error")
+        return redirect(url_for("settings") + "#security")
+    security.remove_password(key)
+    LOCK["protected"] = False
+    flash("Password removed. Budget Tool now opens without one, and your budget isn't protected.", "ok")
+    return redirect(url_for("settings") + "#security")
+
+
+@app.post("/settings/recovery-code")
+def settings_recovery_code():
+    key = check_password(request.form.get("current", ""))
+    if key is None:
+        flash("That password isn't right, so your recovery code wasn't changed.", "error")
+        return redirect(url_for("settings") + "#security")
+    return render_template("lock.html", mode="code", code=security.new_recovery_code(key), first=False)
+
+
+@app.post("/settings/lock-after")
+def settings_lock_after():
+    raw = request.form.get("minutes", "15")
+    minutes = int(raw) if raw.isdigit() and int(raw) in LOCK_CHOICES else 15
+    with db.connect() as conn:
+        db.set_setting(conn, "lock_after_minutes", str(minutes))
+    LOCK["minutes"] = minutes
+    flash("Saved.", "ok")
+    return redirect(url_for("settings") + "#security")
+
+
+@app.post("/backups/now")
+def backups_now():
+    try:
+        name = security.make_backup("manual")
+        flash(f"Backed up ({name}). Copies you make yourself are kept until you delete them.", "ok")
+    except Exception as e:
+        flash(f"Couldn't back up: {e}", "error")
+    return redirect(url_for("settings") + "#backups")
+
+
+@app.post("/backups/open")
+def backups_open():
+    os.makedirs(security.BACKUP_DIR, exist_ok=True)
+    try:
+        os.startfile(security.BACKUP_DIR)
+    except OSError:
+        flash(f"Couldn't open the folder. It's {security.BACKUP_DIR}", "error")
+    return redirect(url_for("settings") + "#backups")
+
+
+@app.post("/backups/restore")
+def backups_restore():
+    if STARTUP_SYNC["running"]:
+        flash("Wait until Budget Tool has finished syncing with your bank, then try again.", "error")
+        return redirect(url_for("settings") + "#backups")
+    if confirm_identity() is None:
+        flash("That password isn't right, so nothing was restored.", "error")
+        return redirect(url_for("settings") + "#backups")
+    name = request.form.get("name", "")
+    try:
+        before = security.restore(name)
+    except Exception as e:
+        flash(f"Couldn't restore that backup: {e}", "error")
+        return redirect(url_for("settings") + "#backups")
+    flash(f"Restored {name}. Your budget as it was just before is saved as {before}, in case you want it back.", "ok")
+    return redirect(url_for("overview"))
 
 
 # ---------------------------------------------------------------- updates
@@ -1150,11 +1802,7 @@ def start_server():
     server = make_server("127.0.0.1", 0, app, threaded=True)
     BASE_URL = f"http://127.0.0.1:{server.server_port}"
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    with db.connect() as conn:
-        has_banks = conn.execute("SELECT 1 FROM items").fetchone() is not None
-    if has_banks and plaid.configured():
-        STARTUP_SYNC["running"] = True
-        threading.Thread(target=startup_sync, daemon=True).start()
+    # Nothing is read from your budget until you unlock it; the bank sync starts then (finish_unlock).
     threading.Thread(target=update_check_loop, daemon=True).start()
     return f"{BASE_URL}/?key={LAUNCH_KEY}"
 

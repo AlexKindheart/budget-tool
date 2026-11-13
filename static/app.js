@@ -179,3 +179,90 @@ document.addEventListener('click', (e) => {
     } catch (e) { /* try again */ }
   }, 1500);
 })();
+
+// Automatic lock: after the chosen minutes without use (no typing, clicking or scrolling), lock Budget Tool. While
+// you're using the window it tells the server now and then, so a long stretch of typing on one page doesn't count
+// as "without use".
+(function () {
+  const mins = parseInt(document.body.dataset.lockAfter || '0', 10);
+  if (!mins) return;
+  let last = Date.now(), told = Date.now();
+  const used = () => {
+    last = Date.now();
+    if (last - told > 60000) { told = last; fetch('/api/still-here').catch(() => {}); }
+  };
+  ['keydown', 'mousedown', 'mousemove', 'wheel', 'touchstart', 'scroll'].forEach((ev) =>
+    window.addEventListener(ev, used, { passive: true, capture: true }));
+  setInterval(() => {
+    if (Date.now() - last > mins * 60000) window.location.href = document.body.dataset.lockUrl;
+  }, 15000);
+})();
+
+// Register: tick several transactions and give them one category. The bar appears once something is ticked.
+(function () {
+  const bar = document.querySelector('[data-bulk]');
+  if (!bar) return;
+  const boxes = [...document.querySelectorAll('input[name="ids"][form="bulk-form"]')];
+  const all = document.querySelector('[data-bulk-all]');
+  const count = bar.querySelector('[data-bulk-count]');
+  const update = () => {
+    const n = boxes.filter((b) => b.checked).length;
+    bar.hidden = n === 0;
+    count.textContent = n;
+    if (all) { all.checked = n > 0 && n === boxes.length; all.indeterminate = n > 0 && n < boxes.length; }
+  };
+  boxes.forEach((b) => b.addEventListener('change', update));
+  if (all) all.addEventListener('change', () => { boxes.forEach((b) => { b.checked = all.checked; }); update(); });
+  update();
+})();
+
+const moneyText = (v) => (v < 0 ? '-' : '') + '$' + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const cents = (s) => Math.round((parseFloat(String(s || '').replace(/[$,]/g, '')) || 0) * 100);
+
+// Edit a transaction: splitting it. Shows how much is still to split, and adds rows.
+document.querySelectorAll('[data-split]').forEach((form) => {
+  const total = cents(form.dataset.total);
+  const left = form.querySelector('[data-split-left]');
+  const body = form.querySelector('tbody');
+  const update = () => {
+    const used = [...form.querySelectorAll('input[name="split_amount"]')].reduce((s, i) => s + cents(i.value), 0);
+    const d = total - used;
+    left.textContent = d === 0 ? 'Adds up exactly' : (d > 0 ? moneyText(d / 100) + ' left to split' : moneyText(-d / 100) + ' too much');
+    left.className = d === 0 ? 'pos' : 'neg';
+  };
+  form.querySelector('[data-split-add]').addEventListener('click', () => {
+    const row = body.lastElementChild.cloneNode(true);
+    row.querySelectorAll('input').forEach((i) => { i.value = ''; });
+    row.querySelector('select').value = '';
+    body.appendChild(row);
+    update();
+  });
+  form.addEventListener('input', update);
+  update();
+});
+
+// Balance an account against a statement: live difference; Finish only when it's $0.00.
+(function () {
+  const form = document.querySelector('[data-reconcile]');
+  if (!form) return;
+  const done = cents(form.dataset.done);
+  const boxes = [...form.querySelectorAll('input[name="ids"]')];
+  const bal = form.querySelector('input[name="balance"]');
+  const ticked = form.querySelector('[data-recon-ticked]');
+  const diff = form.querySelector('[data-recon-diff]');
+  const finish = form.querySelector('[data-recon-finish]');
+  const all = form.querySelector('[data-recon-all]');
+  const update = () => {
+    const t = boxes.filter((b) => b.checked).reduce((s, b) => s + cents(b.dataset.amount), 0);
+    ticked.textContent = moneyText(t / 100);
+    if (bal.value.trim() === '') { diff.textContent = '-'; finish.disabled = true; return; }
+    const d = cents(bal.value) - done - t;
+    diff.textContent = moneyText(d / 100);
+    diff.className = d === 0 ? 'pos' : 'neg';
+    finish.disabled = d !== 0;
+  };
+  if (all) all.addEventListener('change', () => { boxes.forEach((b) => { b.checked = all.checked; }); update(); });
+  form.addEventListener('input', update);
+  form.addEventListener('change', update);
+  update();
+})();

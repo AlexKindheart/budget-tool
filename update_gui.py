@@ -92,7 +92,7 @@ class Api:
     def _status(self, checked=False):
         st = updater.status()
         st["checked"] = checked
-        st["has_previous"] = os.path.isdir(os.path.join(paths.APP_DIR, "app.previous"))
+        st["has_previous"] = updater.can_roll_back()
         return st
 
     def _js(self, fn, *args):

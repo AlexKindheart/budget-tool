@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Balance {{ acc.name }}{% endblock %}
+{% block content %}
+<div class="bar">
+  <h1>Balance {{ acc.name }}</h1>
+  <a class="btn ghost" href="{{ url_for('accounts') }}">Back to Accounts</a>
+</div>
+
+<section class="card">
+  <p class="muted small">Check this account against a statement: enter the statement's date and ending balance, then tick each
+     transaction that's on the statement. When the difference is $0.00, click <strong>Finish</strong>: those transactions are
+     marked reconciled and won't be listed here again.
+     {% if last %}Last balanced against the statement of {{ last.date }} ({{ last.balance|money }}).{% endif %}</p>
+  <form method="get" class="inline">
+    <label class="small">Statement date <input type="date" name="date" value="{{ stmt_date }}" onchange="this.form.submit()"></label>
+    <input type="hidden" name="balance" value="{{ balance }}">
+    <noscript><button class="btn small">Show</button></noscript>
+  </form>
+</section>
+
+<form method="post" data-reconcile data-done="{{ '%.2f'|format(done) }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="date" value="{{ stmt_date }}">
+  <section class="card">
+    <div class="bar tight">
+      <label>Ending balance on the statement <input name="balance" class="money" inputmode="decimal" value="{{ balance }}" required></label>
+      <div class="recon-sum small">
+        Already reconciled {{ done|money }} · ticked <strong data-recon-ticked>$0.00</strong> ·
+        difference <strong data-recon-diff>-</strong>
+      </div>
+    </div>
+    <div class="scroll">
+    <table class="tx">
+      <thead><tr><th class="tick"><input type="checkbox" data-recon-all aria-label="Tick all"></th><th>Date</th><th>Payee</th><th class="num">Payment</th><th class="num">Deposit</th></tr></thead>
+      <tbody>
+      {% for t in rows %}
+        <tr><td class="tick"><input type="checkbox" name="ids" value="{{ t.id }}" data-amount="{{ '%.2f'|format(t.amount) }}" aria-label="On the statement: {{ t.payee }}"></td>
+          <td class="nowrap">{{ t.date }}</td><td>{{ t.payee }}{% if t.memo %}<div class="muted small">{{ t.memo }}</div>{% endif %}</td>
+          <td class="num">{% if t.amount < 0 %}{{ (-t.amount)|money }}{% endif %}</td>
+          <td class="num pos">{% if t.amount > 0 %}{{ t.amount|money }}{% endif %}</td></tr>
+      {% else %}
+        <tr><td colspan="5" class="muted">Nothing left to reconcile up to {{ stmt_date }}.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+    <div class="actions"><button class="btn primary" data-recon-finish>Finish</button></div>
+  </section>
+</form>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Old copy{% endblock %}
+{% block content %}
+<h1>An old copy of your budget</h1>
+{% for f in found %}
+<section class="card">
+  <p>An earlier, installed version of Budget Tool left a copy of your budget in <code>{{ f.folder }}</code>. It isn't
+     encrypted, so anyone who can get to that folder can read it, including your bank connections.</p>
+  <p class="muted small">Budget Tool already copied what it needed from it. Files that would be deleted:
+     {% for n in f.files %}<code>{{ n }}</code>{{ ', ' if not loop.last }}{% endfor %}. Nothing else in that folder is touched.</p>
+  <div class="actions">
+    <form method="post" onsubmit="return confirm('Delete the old copy for good?')">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="folder" value="{{ f.folder }}">
+      <button class="btn primary" name="action" value="delete">Delete the old copy</button></form>
+    <form method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}"><input type="hidden" name="folder" value="{{ f.folder }}">
+      <button class="btn ghost" name="action" value="keep">Keep it</button></form>
+  </div>
+</section>
+{% else %}
+<section class="card"><p class="muted">There's no old copy to deal with.</p></section>
+{% endfor %}
+{% endblock %}

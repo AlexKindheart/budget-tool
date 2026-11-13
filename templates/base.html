@@ -7,10 +7,11 @@
   <title>{% block title %}Budget{% endblock %} · Budget Tool</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body{% if not locked and protected and lock_minutes %} data-lock-after="{{ lock_minutes }}" data-lock-url="{{ url_for('lock', idle=1) }}"{% endif %}>
   <header class="site-header">
     <div class="wrap">
-      <a class="logo" href="{{ url_for('overview') }}">Budget <span>Tool</span></a>
+      <a class="logo" href="{{ url_for('overview') if not locked else '#' }}">Budget <span>Tool</span></a>
+      {% if not locked %}
       <nav class="site-nav" aria-label="Main">
         {% set ep = request.endpoint %}
         {% for endpoint, eps, name in [
@@ -21,6 +22,8 @@
           <a href="{{ url_for(endpoint) }}"{% if ep in eps %} class="on" aria-current="page"{% endif %}>{{ name }}</a>
         {% endfor %}
       </nav>
+      {% if protected %}<a class="btn ghost small lock-btn" href="{{ url_for('lock') }}" title="Lock Budget Tool now. Your password opens it again.">Lock</a>{% endif %}
+      {% endif %}
       {% if plaid_env == 'sandbox' and plaid_ready %}<span class="pill warn" title="Fake test data. Switch to Production on the Settings screen for real banks.">Sandbox</span>{% endif %}
     </div>
   </header>

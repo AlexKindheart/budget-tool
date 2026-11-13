@@ -94,7 +94,7 @@
     </div>
   </div>
   <div class="acct-picks" role="group" aria-label="Accounts to show">
-    <label class="pick"><input type="checkbox" value="all" checked> <i class="key sa"></i>All accounts</label>
+    <label class="pick" title="Everything you have minus what you owe on cards and loans"><input type="checkbox" value="all" checked> <i class="key sa"></i>All accounts (net worth)</label>
     {% for s in trend.accounts if not s.closed %}
       <label class="pick"><input type="checkbox" value="{{ s.id }}"> <i class="key s{{ s.slot % 8 + 1 }}"></i>{{ s.name }}</label>
     {% endfor %}
@@ -126,6 +126,25 @@
   </section>
 
   <div>
+    <section class="card coming">
+      <div class="bar tight"><h2>Coming up</h2><a class="small" href="{{ url_for('bills_page') }}">{{ 'Bills' if safe else 'Add bills' }} &rarr;</a></div>
+      {% if safe %}
+        <div class="safe">
+          <span class="muted small">Safe to spend</span>
+          <strong class="hero-value {{ 'neg' if safe.amount < 0 }}">{{ safe.amount|money }}</strong>
+          <span class="muted small">{{ safe.cash|money }} in checking and cash, minus {{ safe.bills|money }} of bills
+            {% if safe.paycheck %}before your next paycheck on {{ safe.until.strftime('%b %d') }}{% else %}in the next 30 days{% endif %}.</span>
+        </div>
+        {% for x in coming %}
+          <div class="row"><div>{{ x.bill.name }} <div class="muted small">{{ x.date.strftime('%a %b %d') }}{% if x.bill.account %} · {{ x.bill.account }}{% endif %}</div></div>
+            <div class="num {{ 'pos' if x.income }}">{{ (x.amount if x.income else -x.amount)|money }}</div></div>
+        {% else %}<p class="muted small">Nothing due in the next 30 days.</p>{% endfor %}
+      {% else %}
+        <p class="muted small">Add the bills and paychecks that repeat (rent, phone, subscriptions, payday) to see what's due
+          and how much is safe to spend before your next paycheck.</p>
+      {% endif %}
+    </section>
+
     <section class="card">
       <div class="bar tight"><h2>Accounts</h2><a class="small" href="{{ url_for('accounts') }}">Manage &rarr;</a></div>
       {% for a in accounts %}{% set bal = balances.get(a.id, (0, 0)) %}

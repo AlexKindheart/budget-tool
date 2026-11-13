@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}{{ {'unlock': 'Unlock', 'setup': 'Choose a password', 'recover': 'Forgot your password', 'code': 'Your recovery code'}[mode] }}{% endblock %}
+{% block content %}
+<section class="card lock-card">
+{% if mode == 'unlock' %}
+  <h1>Unlock Budget Tool</h1>
+  <p class="muted">Your budget is encrypted. Enter your password to open it.</p>
+  <form method="post" action="{{ url_for('unlock') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <div class="form-row"><label for="pw">Password</label>
+      <input id="pw" name="password" type="password" autocomplete="current-password" autofocus required></div>
+    <button class="btn primary">Unlock</button>
+  </form>
+  <p class="muted small"><a href="{{ url_for('recover') }}">Forgot your password?</a></p>
+
+{% elif mode == 'setup' %}
+  <h1>{{ 'Protect your budget' if existing else 'Choose a password' }}</h1>
+  <p>{% if existing %}Budget Tool can now lock your budget with a password (recommended). It's needed each time you open
+     Budget Tool, and without it nobody can read your budget, bank connections or backups, even with a copy of the
+     folder.{% else %}We recommend locking your budget with a password. It's needed each time you open Budget Tool,
+     and without it nobody can read your budget, bank connections or backups.{% endif %}</p>
+  <p class="muted small">Use at least {{ min_len }} characters. A few unrelated words ("maple tractor sunset violin")
+     are strong and easy to remember. Budget Tool never stores your password, so it can't show it to you later.</p>
+  <form method="post" action="{{ url_for('setup_password') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <div class="form-row"><label for="pw">Password</label>
+      <input id="pw" name="password" type="password" autocomplete="new-password" minlength="{{ min_len }}" autofocus required></div>
+    <div class="form-row"><label for="pw2">Password again</label>
+      <input id="pw2" name="confirm" type="password" autocomplete="new-password" minlength="{{ min_len }}" required></div>
+    <button class="btn primary">{{ 'Protect my budget' if existing else 'Set password' }}</button>
+  </form>
+  <details class="no-password">
+    <summary>Continue without a password</summary>
+    <div class="flash warn" role="alert"><strong>Not recommended.</strong> {{ warning }}</div>
+    <form method="post" action="{{ url_for('setup_password') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="none">
+      <label class="small"><input type="checkbox" name="understand" value="1" required> I understand that without a password
+        my budget and bank information aren't protected</label>
+      <p><button class="btn">Continue without a password</button></p>
+    </form>
+    <p class="muted small">You can add a password any time in Settings → Password and lock.</p>
+  </details>
+
+{% elif mode == 'recover' %}
+  <h1>Forgot your password?</h1>
+  <p class="muted">Enter the recovery code you saved when you set your password, and choose a new password.
+     Without the code (or your password) your budget can't be opened. Nobody can reset it for you.</p>
+  <form method="post" action="{{ url_for('recover') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <div class="form-row"><label for="code">Recovery code</label>
+      <input id="code" name="code" autocomplete="off" spellcheck="false" placeholder="ABCD-EFGH-…" autofocus required></div>
+    <div class="form-row"><label for="pw">New password</label>
+      <input id="pw" name="password" type="password" autocomplete="new-password" minlength="{{ min_len }}" required></div>
+    <div class="form-row"><label for="pw2">New password again</label>
+      <input id="pw2" name="confirm" type="password" autocomplete="new-password" minlength="{{ min_len }}" required></div>
+    <button class="btn primary">Set new password</button>
+  </form>
+  <p class="muted small"><a href="{{ url_for('unlock') }}">Back to unlock</a></p>
+
+{% elif mode == 'code' %}
+  <h1>Save your recovery code</h1>
+  <p>If you ever forget your password, this code is the <strong>only</strong> way back into your budget. Write it down
+     or print it, and keep it somewhere safe, away from this computer. It's shown only now.</p>
+  <p class="recovery-code">{{ code }}</p>
+  {% if added %}<p class="muted small">Your budget is now protected. Budget Tool will ask for your password each time it opens.</p>
+  {% elif not first %}<p class="muted small">Your old recovery code no longer works.</p>{% endif %}
+  <label class="small"><input type="checkbox" id="saved" onchange="document.getElementById('go').disabled = !this.checked"> I've saved my recovery code</label>
+  <p><button type="button" class="btn primary" id="go" disabled
+        data-href="{{ url_for('overview') if first else url_for('settings') + '#security' }}"
+        onclick="location.href = this.dataset.href">Continue</button></p>
+{% endif %}
+</section>
+{% endblock %}

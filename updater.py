@@ -23,8 +23,19 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-import db
 import paths
+import sigcheck
+
+# Updates are only installed when the newest commit is signed with one of these keys (the developer's SSH signing
+# key; the private half never leaves the developer's computer). This is checked here, not by trusting GitHub's
+# "Verified" badge, so even someone who got into the GitHub account couldn't push an update everyone installs.
+# Lost the key? Add a new one here and ship it with a fresh installer (copies that can't verify keep working, they
+# just stop updating).
+TRUSTED_SIGNERS = [
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILgavH/gBS81tXZOHJBLr2UCRtak9wHPC8wtQEiSHhm8 Budget Tool update signing",
+]
+UNSIGNED = ("The newest version on GitHub isn't signed by Budget Tool's developer, so it won't be installed. "
+            "Your copy keeps working as it is.")
 
 REPO = "AlexKindheart/budget-tool"
 BRANCH = "main"
@@ -74,12 +85,17 @@ def can_install():
 
 # ---------------------------------------------------------------- checking
 
+def _check_file():
+    # Kept outside the encrypted budget (it's only version numbers and change notes), so the updater and a locked
+    # Budget Tool can read it without your password.
+    return os.path.join(paths.DATA_DIR, "update-check.json")
+
+
 def cached():
-    with db.connect() as conn:
-        raw = db.get_setting(conn, "update_check")
     try:
-        info = json.loads(raw) if raw else None
-    except ValueError:
+        with open(_check_file(), encoding="utf-8") as f:
+            info = json.load(f)
+    except (OSError, ValueError):
         return None
     return info if info and info.get("kind") == "commits" else None  # ignore answers from the old release updater
 
@@ -94,7 +110,7 @@ def status():
         "current": label(current_version(), mine),
         "latest": label(info.get("latest_version") or "", latest) if latest else None,
         "latest_sha": latest,
-        "available": bool(can_install() and latest and latest != mine and info.get("ahead")),
+        "available": bool(can_install() and latest and latest != mine and info.get("ahead") and info.get("signed")),
         "count": info.get("count", 0),
         "notes": "\n".join("• " + m for m in msgs),
         "messages": msgs,
@@ -103,6 +119,27 @@ def status():
         "can_install": can_install(),
         "from_source": not paths.INSTALLED,
     }
+
+
+def signed_by_developer(commit):
+    """Is this commit (GitHub's /commits/<sha> answer) signed by a trusted key? The signature is checked over the
+    commit's own contents, which name its file tree, so the files downloaded for it are the ones that were signed."""
+    c = commit.get("commit") or {}
+    v = c.get("verification") or {}
+    sig, payload, tree = v.get("signature"), v.get("payload"), (c.get("tree") or {}).get("sha")
+    if not sig or not payload or not tree or not payload.startswith(f"tree {tree}\n"):
+        return False
+    return sigcheck.verify_sshsig(sig, payload.encode("utf-8"), TRUSTED_SIGNERS)
+
+
+def verify_commit(sha):
+    """Raise unless GitHub's commit `sha` is signed by the developer."""
+    r = requests.get(f"{API}/commits/{sha}", headers=HEADERS, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    if data.get("sha") != sha or not signed_by_developer(data):
+        raise RuntimeError(UNSIGNED)
+    return data
 
 
 def check(force=False):
@@ -135,14 +172,18 @@ def check(force=False):
                 count = 1
                 messages = [head["commit"]["message"].splitlines()[0]]
         version = requests.get(f"https://raw.githubusercontent.com/{REPO}/{latest}/VERSION", headers=HEADERS, timeout=20)
+        signed = signed_by_developer(head)
         info = {"kind": "commits", "checked_at": now, "latest_sha": latest, "ahead": ahead, "count": count,
                 "latest_version": version.text.strip()[:40] if version.ok else current_version(),
-                "messages": messages[:60], "error": None}
+                "messages": messages[:60], "signed": signed,
+                "error": None if signed or not (mine and ahead) else UNSIGNED}
     except Exception as e:  # offline, rate-limited, etc. Keep the last good answer.
         info = dict(info or {"kind": "commits"})
         info.update(checked_at=now, error=f"Couldn't check for updates: {e}")
-    with db.connect() as conn:
-        db.set_setting(conn, "update_check", json.dumps(info))
+    tmp = _check_file() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(info, f)
+    os.replace(tmp, _check_file())
     return status()
 
 
@@ -287,6 +328,8 @@ def install(sha, progress=lambda msg: None):
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work)
     try:
+        progress("Checking the update is signed by Budget Tool's developer…")
+        verify_commit(sha)
         progress("Downloading the update from GitHub…")
         src = _download(sha, os.path.join(work, "download"))
         progress("Checking it…")
@@ -313,12 +356,25 @@ def install(sha, progress=lambda msg: None):
         shutil.rmtree(work, ignore_errors=True)
 
 
+def can_roll_back():
+    """Is there a previous version, and can it open your data? Versions before the password lock can't read an
+    encrypted budget."""
+    previous = os.path.join(paths.APP_DIR, "app.previous")
+    if not os.path.isdir(previous):
+        return False
+    return os.path.isfile(os.path.join(previous, "security.py")) or \
+        not os.path.isfile(os.path.join(paths.DATA_DIR, "lock.json"))
+
+
 def roll_back():
     """Put the previous version (app.previous) back."""
     app_dir = os.path.join(paths.APP_DIR, "app")
     previous = os.path.join(paths.APP_DIR, "app.previous")
     if not os.path.isdir(previous):
         raise RuntimeError("There's no previous version to go back to.")
+    if not can_roll_back():
+        raise RuntimeError("The previous version can't open your budget now that it's password-protected, so "
+                           "Budget Tool stays on this version.")
     if app_running():
         raise RuntimeError("Close Budget Tool first.")
     broken = os.path.join(paths.APP_DIR, "app.rolled-back")

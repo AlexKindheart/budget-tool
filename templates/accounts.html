@@ -34,7 +34,8 @@
           {% endif %}{% else %}<span class="muted">-</span>{% endif %}</td>
         <td><input form="acc-form" name="sort_{{ a.id }}" value="{{ a.sort }}" class="tiny"></td>
         <td><input form="acc-form" type="checkbox" name="closed_{{ a.id }}" value="1" {{ 'checked' if a.closed }}></td>
-        <td>{% if not a.plaid_account_id %}<button class="btn ghost small danger" form="del-{{ a.id }}">Delete</button>{% endif %}</td>
+        <td class="nowrap">{% if not a.plaid_account_id %}<a class="btn ghost small" href="{{ url_for('reconcile', account_id=a.id) }}" title="Check this account against a statement">Balance it</a>
+          <button class="btn ghost small danger" form="del-{{ a.id }}">Delete</button>{% endif %}</td>
       </tr>
     {% else %}
       <tr><td colspan="10" class="muted">No accounts yet. Connect a bank, or add one below.</td></tr>

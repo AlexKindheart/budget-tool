@@ -14,8 +14,21 @@ set /p VER=<VERSION
 
 py -3.11 build.py --stage-only || goto :fail
 
-echo Packing the installer...
-"%ISCC%" /Q /DAppVersion=%VER% installer.iss || goto :fail
+rem Code signing (optional): with a code-signing certificate set up in signing.bat (copy signing.example.bat; it's
+rem never committed), the two launchers and the installer are signed, so Windows doesn't warn "Windows protected your PC".
+set "SIGN_CMD="
+if exist signing.bat call signing.bat
+if defined SIGN_CMD (
+  echo Signing the launchers...
+  for %%F in ("dist\BudgetTool\BudgetTool.exe" "dist\BudgetTool\Update Budget Tool.exe") do (
+    %SIGN_CMD% %%F || goto :fail
+  )
+  echo Packing and signing the installer...
+  "%ISCC%" /Q /DAppVersion=%VER% /DSIGN=1 "/Sbudgettool=%SIGN_CMD% $f" installer.iss || goto :fail
+) else (
+  echo Packing the installer ^(not code-signed: see signing.example.bat^)...
+  "%ISCC%" /Q /DAppVersion=%VER% installer.iss || goto :fail
+)
 rmdir /s /q dist
 
 echo.
